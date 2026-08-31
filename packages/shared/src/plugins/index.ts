@@ -243,6 +243,11 @@ export const SUPERSET_MANAGED_SKILLS = [
 		name: "orchestrate",
 		description: "Coordinate multiple coding agents across workspaces",
 	},
+	{
+		name: "plugins",
+		description:
+			"Install plugins, connect their accounts, and call their MCP tools",
+	},
 	{ name: "setup", description: "Make a repository Superset-ready" },
 	{ name: "standup", description: "Digest of what your Superset agents did" },
 ] as const;
