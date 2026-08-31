@@ -5,7 +5,7 @@ import { syncPlugins } from "../../../lib/plugins/install";
 
 export default command({
 	description:
-		"Reconcile installed plugins with ~/.superset/skills, adding, refreshing, and reaping skill folders",
+		"Reconcile installed plugins with the skill directories agents read, adding, refreshing, and reaping skill folders",
 	skipMiddleware: true,
 	display: (data) =>
 		table(
@@ -15,7 +15,7 @@ export default command({
 			[30, 16, 54],
 		),
 	run: async () => {
-		const result = syncPlugins();
+		const result = await syncPlugins();
 		const reaped = result.removed
 			? ` Reaped ${result.removed} stale skill folder${result.removed === 1 ? "" : "s"}.`
 			: "";

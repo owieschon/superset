@@ -51,7 +51,7 @@ export default command({
 
 		// Local first: skills on disk and agent config are what the machine
 		// needs, and they work whether or not the account call succeeds.
-		const local = installPlugin(name, marketplace);
+		const local = await installPlugin(name, marketplace);
 
 		// The local install already succeeded, so a failure here is partial, not
 		// total: report it rather than throwing away that fact. Same split the

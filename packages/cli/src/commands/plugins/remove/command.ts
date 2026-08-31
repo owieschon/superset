@@ -13,7 +13,7 @@ export default command({
 	],
 	run: async ({ ctx, args }) => {
 		const { name, marketplace } = parsePluginRef(args.plugin as string);
-		const removed = removePlugin(name, marketplace);
+		const removed = await removePlugin(name, marketplace);
 
 		// Mirrors the UI: removing the account install also disconnects live
 		// credentials, so an uninstalled plugin cannot still be authorized.

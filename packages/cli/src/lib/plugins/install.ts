@@ -2,6 +2,10 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import {
+	createManagedSkills,
+	resolveDisabledSkillIds,
+} from "@superset/agent-setup";
 import { CLIError } from "@superset/cli-framework";
 import {
 	assertSafeSegment,
@@ -238,10 +242,10 @@ export interface InstallPluginResult {
 	skills: number;
 }
 
-export function installPlugin(
+export async function installPlugin(
 	name: string,
 	marketplace?: string,
-): InstallPluginResult {
+): Promise<InstallPluginResult> {
 	const candidates = listAvailable().filter(
 		(a) =>
 			a.entry.name === name && (!marketplace || a.marketplace === marketplace),
@@ -309,7 +313,7 @@ export function installPlugin(
 	} satisfies InstalledPlugin);
 	writeInstalledPlugins(plugins);
 
-	const skills = syncPlugins().skills;
+	const skills = (await syncPlugins()).skills;
 	return {
 		name,
 		marketplace: found.marketplace,
@@ -319,10 +323,10 @@ export function installPlugin(
 	};
 }
 
-export function removePlugin(
+export async function removePlugin(
 	name: string,
 	marketplace?: string,
-): InstalledPlugin {
+): Promise<InstalledPlugin> {
 	const plugins = readInstalledPlugins();
 	const match = plugins.find(
 		(p) => p.name === name && (!marketplace || p.marketplace === marketplace),
@@ -333,7 +337,7 @@ export function removePlugin(
 	if (fs.existsSync(match.installPath)) {
 		fs.rmSync(match.installPath, { recursive: true });
 	}
-	syncPlugins();
+	await syncPlugins();
 	return match;
 }
 
@@ -344,18 +348,6 @@ export interface SkillEntry {
 	directory: string;
 	path: string;
 	description: string;
-}
-
-const MANAGED_MARKER = ".superset-plugin-skill";
-
-function rewriteSkillName(contents: string, dirName: string): string {
-	if (!contents.startsWith("---")) return contents;
-	const end = contents.indexOf("\n---", 3);
-	if (end === -1) return contents;
-	const front = contents.slice(0, end);
-	const rest = contents.slice(end);
-	if (!/^name:\s*/m.test(front)) return contents;
-	return front.replace(/^name:\s*.*$/m, `name: ${dirName}`) + rest;
 }
 
 function readDescription(contents: string): string {
@@ -370,90 +362,78 @@ export interface SyncResult {
 	entries: SkillEntry[];
 }
 
-export function syncPlugins(): SyncResult {
-	const installed = readInstalledPlugins().filter((p) => p.enabled);
+/** Every provisioned skill directory, managed or hand-written. */
+function skillDirNames(): string[] {
 	const root = skillsRoot();
-	fs.mkdirSync(root, { recursive: true });
+	if (!fs.existsSync(root)) return [];
+	return fs
+		.readdirSync(root, { withFileTypes: true })
+		.filter((item) => item.isDirectory())
+		.map((item) => item.name);
+}
 
-	const wanted = new Set<string>();
-	const entries: SkillEntry[] = [];
+/**
+ * Reconciles installed plugins into the directories agents actually read.
+ *
+ * The provisioning belongs to agent-setup, which already writes Superset's own
+ * skills to `~/.agents/skills` and mirrors them into `~/.claude/skills` as a
+ * plugin directory — Claude does not read the shared convention and every
+ * other agent does. Handing it installed plugins as extra sources gets them
+ * both destinations, so a plugin skill reaches Claude, Codex, Vibe, and Kimi
+ * without a second mechanism to keep in step with this one.
+ */
+export async function syncPlugins(): Promise<SyncResult> {
+	const installed = readInstalledPlugins().filter((p) => p.enabled);
+	const before = new Set(skillDirNames());
 
-	for (const plugin of installed) {
-		const skillsDir = path.join(plugin.installPath, "skills");
-		if (!fs.existsSync(skillsDir)) continue;
+	await createManagedSkills({
+		// Read from the machine-shared mirror, not left empty: provisioning is
+		// declarative, so a run that does not know what the user disabled in the
+		// desktop would put every one of those skills straight back.
+		disabledSkills: resolveDisabledSkillIds(),
+		pluginSources: installed.map((plugin) => ({
+			name: plugin.name,
+			dir: plugin.installPath,
+		})),
+	});
 
-		for (const item of fs.readdirSync(skillsDir, { withFileTypes: true })) {
-			if (!item.isDirectory()) continue;
-			const source = path.join(skillsDir, item.name);
-			if (!fs.existsSync(path.join(source, "SKILL.md"))) continue;
-
-			const dirName = `${plugin.name}-${item.name}`;
-			const target = path.join(root, dirName);
-			wanted.add(dirName);
-
-			if (fs.existsSync(target)) fs.rmSync(target, { recursive: true });
-			copyTree(source, target);
-			fs.writeFileSync(
-				path.join(target, MANAGED_MARKER),
-				`${plugin.marketplace}\n`,
-			);
-
-			const skillFile = path.join(target, "SKILL.md");
-			const contents = fs.readFileSync(skillFile, "utf8");
-			fs.writeFileSync(skillFile, rewriteSkillName(contents, dirName));
-
-			entries.push({
-				plugin: plugin.name,
-				marketplace: plugin.marketplace,
-				skill: item.name,
-				directory: dirName,
-				path: target,
-				description: readDescription(contents),
-			});
-		}
-	}
-
-	let removed = 0;
-	for (const item of fs.readdirSync(root, { withFileTypes: true })) {
-		if (!item.isDirectory() || wanted.has(item.name)) continue;
-		const dir = path.join(root, item.name);
-		if (!fs.existsSync(path.join(dir, MANAGED_MARKER))) continue;
-		fs.rmSync(dir, { recursive: true });
-		removed++;
-	}
+	const after = new Set(skillDirNames());
+	const entries = listSkills();
 
 	return {
 		plugins: installed.length,
 		skills: entries.length,
-		removed,
+		removed: [...before].filter((dir) => !after.has(dir)).length,
 		entries,
 	};
 }
 
+/**
+ * The plugin-provisioned skills. The shared directory also holds Superset's
+ * own bundled skills and anything the user hand-wrote, and this command is
+ * about what a plugin brought.
+ */
 export function listSkills(): SkillEntry[] {
 	const root = skillsRoot();
-	if (!fs.existsSync(root)) return [];
-
-	const installed = readInstalledPlugins();
+	// Longest name first: "github" also prefixes "github-actions-<skill>", and
+	// the more specific plugin is the real owner.
+	const installed = [...readInstalledPlugins()].sort(
+		(a, b) => b.name.length - a.name.length,
+	);
 	const entries: SkillEntry[] = [];
 
-	for (const item of fs.readdirSync(root, { withFileTypes: true })) {
-		if (!item.isDirectory()) continue;
-		const dir = path.join(root, item.name);
+	for (const directory of skillDirNames()) {
+		const owner = installed.find((p) => directory.startsWith(`${p.name}-`));
+		if (!owner) continue;
+		const dir = path.join(root, directory);
 		const skillFile = path.join(dir, "SKILL.md");
 		if (!fs.existsSync(skillFile)) continue;
 
-		const marker = path.join(dir, MANAGED_MARKER);
-		const marketplace = fs.existsSync(marker)
-			? fs.readFileSync(marker, "utf8").trim()
-			: "";
-		const owner = installed.find((p) => item.name.startsWith(`${p.name}-`));
-
 		entries.push({
-			plugin: owner?.name ?? "",
-			marketplace,
-			skill: owner ? item.name.slice(owner.name.length + 1) : item.name,
-			directory: item.name,
+			plugin: owner.name,
+			marketplace: owner.marketplace,
+			skill: directory.slice(owner.name.length + 1),
+			directory,
 			path: dir,
 			description: readDescription(fs.readFileSync(skillFile, "utf8")),
 		});

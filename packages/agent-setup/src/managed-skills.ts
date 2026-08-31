@@ -19,9 +19,22 @@ export const MANAGED_COMMAND_NAMESPACE = "superset";
 /**
  * Claude Code loads any ~/.claude/skills/<name> directory containing a
  * .claude-plugin/plugin.json as a "skills-directory plugin" named
- * `<name>@skills-dir`, namespacing its skills as `<name>:<skill>`.
+ * `<name>@skills-dir`, namespacing its skills as `<name>:<skill>`. One
+ * directory per source, so a source's name is the namespace its skills get.
  */
-const CLAUDE_PLUGIN_DIR_NAME = "superset";
+const BUNDLED_SOURCE_NAME = "superset";
+
+/**
+ * What of a source directory belongs in its Claude plugin dir. Marketplace
+ * plugins also carry `server/`, `src/`, and `versions/`, none of which Claude
+ * reads and one of which is a compiled bundle.
+ */
+const CLAUDE_PLUGIN_CONTENTS = new Set([
+	".claude-plugin",
+	"commands",
+	"plugin.json",
+	"skills",
+]);
 
 /**
  * Skills exposed as slash commands to the in-app chat. Deliberately a curated
@@ -30,11 +43,32 @@ const CLAUDE_PLUGIN_DIR_NAME = "superset";
  */
 const COMMAND_SKILLS = ["feedback", "10x", "setup", "doctor"] as const;
 
+/**
+ * A directory holding a `skills/` folder to provision from. The bundled
+ * Superset plugin is one; every installed marketplace plugin is another.
+ * `name` namespaces everything written for the source, so two plugins can
+ * ship a skill of the same name without colliding.
+ */
+export interface PluginSkillSource {
+	name: string;
+	dir: string;
+}
+
 export interface ManagedSkillsOptions {
 	homeDir?: string;
 	templatesDir?: string;
-	/** Skill names to withhold provisioning for (and reap if already provisioned). */
+	/**
+	 * Skills to withhold provisioning for (and reap if already provisioned). A
+	 * bare name disables that skill of the bundled Superset plugin; a qualified
+	 * `<plugin>/<skill>` disables one plugin's copy, which is the only form
+	 * that can tell apart two plugins shipping the same skill name.
+	 */
 	disabledSkills?: readonly string[];
+	/**
+	 * Marketplace plugins to provision alongside the bundled one. Omitted means
+	 * bundled-only — exactly the behaviour from before plugins existed.
+	 */
+	pluginSources?: readonly PluginSkillSource[];
 }
 
 /**
@@ -59,6 +93,45 @@ export function setFrontmatterName(content: string, name: string): string {
 	const frontmatter = content.slice(0, frontmatterEnd);
 	const rewritten = frontmatter.replace(/^name:[^\n]*$/m, `name: ${name}`);
 	return rewritten + content.slice(frontmatterEnd);
+}
+
+/**
+ * Bare names address the bundled plugin only. Qualifying with the source name
+ * is what lets two plugins ship the same skill name and be disabled apart.
+ */
+function isSkillDisabled(
+	disabled: ReadonlySet<string>,
+	sourceName: string,
+	skillName: string,
+): boolean {
+	if (disabled.has(`${sourceName}/${skillName}`)) return true;
+	return sourceName === BUNDLED_SOURCE_NAME && disabled.has(skillName);
+}
+
+/**
+ * The bundled plugin first, then marketplace plugins. Deduped with the bundled
+ * one pinned: a marketplace plugin named "superset" must not be able to take
+ * over the directory the bundled skills live in. Sources with no `skills/` are
+ */
+function resolveSources(
+	bundledPluginDir: string,
+	pluginSources: readonly PluginSkillSource[] = [],
+): PluginSkillSource[] {
+	const sources: PluginSkillSource[] = [
+		{ name: BUNDLED_SOURCE_NAME, dir: bundledPluginDir },
+	];
+	const seen = new Set([BUNDLED_SOURCE_NAME]);
+	for (const source of pluginSources) {
+		if (seen.has(source.name)) {
+			console.warn(
+				`[agent-setup] Ignoring plugin source "${source.name}": that name is already provisioned`,
+			);
+			continue;
+		}
+		seen.add(source.name);
+		sources.push(source);
+	}
+	return sources;
 }
 
 function isUserOwnedFile(filePath: string): boolean {
@@ -93,11 +166,14 @@ function listFilesRecursive(root: string, relative = ""): string[] {
  * previously-managed files that no longer exist in src. Files for which
  * `isExcluded` returns true are treated as absent from src — skipped on the
  * way in, and reaped on the way out if a prior sync already wrote them.
+ * `extraFiles` maps a dest-relative path to contents that src does not hold;
+ * they count as part of src, so the reaper keeps rather than orphans them.
  */
 async function syncDir(
 	src: string,
 	dest: string,
 	isExcluded?: (relativePath: string) => boolean,
+	extraFiles: Readonly<Record<string, string>> = {},
 ): Promise<void> {
 	const sourceFiles = listFilesRecursive(src).filter(
 		(file) => !isExcluded?.(file),
@@ -114,7 +190,14 @@ async function syncDir(
 			executable ? 0o755 : 0o644,
 		);
 	}
-	const wanted = new Set(sourceFiles.map((f) => path.join(dest, f)));
+	for (const [file, contents] of Object.entries(extraFiles)) {
+		const target = path.join(dest, file);
+		fs.mkdirSync(path.dirname(target), { recursive: true });
+		writeFileIfChanged(target, contents, 0o644);
+	}
+	const wanted = new Set(
+		[...sourceFiles, ...Object.keys(extraFiles)].map((f) => path.join(dest, f)),
+	);
 	if (fs.existsSync(dest)) {
 		for (const file of listFilesRecursive(dest)) {
 			const absolute = path.join(dest, file);
@@ -134,52 +217,102 @@ async function syncDir(
 }
 
 /**
- * Provisions the bundled plugin as a Claude Code skills-directory plugin
- * inside one Claude config dir — `~/.claude` for the default account, or a
- * profile dir whose own `skills/` the user owns (a shared profile links
- * `skills/` at the default account instead, and gets it that way).
+ * The manifest Claude Code needs before it will load a directory as a plugin.
+ * Marketplace plugins carry a root `plugin.json` in Superset's own format and
+ * no `.claude-plugin/`; the fields line up, so synthesize Claude's copy rather
+ * than making plugin authors learn a second layout. Returns null when the
+ * source already ships one.
+ */
+function claudePluginManifest(source: PluginSkillSource): string | null {
+	if (fs.existsSync(path.join(source.dir, ".claude-plugin", "plugin.json"))) {
+		return null;
+	}
+	let declared: Record<string, unknown> = {};
+	try {
+		declared = JSON.parse(
+			fs.readFileSync(path.join(source.dir, "plugin.json"), "utf-8"),
+		) as Record<string, unknown>;
+	} catch {
+		// Unreadable or absent: a name and a version are all Claude requires.
+	}
+	const manifest: Record<string, unknown> = {
+		name: source.name,
+		version: typeof declared.version === "string" ? declared.version : "0.0.0",
+	};
+	for (const field of [
+		"description",
+		"author",
+		"homepage",
+		"repository",
+		"license",
+		"keywords",
+	]) {
+		if (declared[field] !== undefined) manifest[field] = declared[field];
+	}
+	return `${JSON.stringify(manifest, null, "\t")}\n`;
+}
+
+/**
+ * Provisions one source as a Claude Code skills-directory plugin inside one
+ * Claude config dir — `~/.claude` for the default account, or a profile dir
+ * whose own `skills/` the user owns (a shared profile links `skills/` at the
+ * default account instead, and gets it that way).
  */
 async function provisionClaudePlugin(
-	bundledPluginDir: string,
+	source: PluginSkillSource,
 	claudeDir: string,
 	disabledSkills: ReadonlySet<string>,
 ): Promise<void> {
-	const target = path.join(claudeDir, "skills", CLAUDE_PLUGIN_DIR_NAME);
+	const target = path.join(claudeDir, "skills", source.name);
 	const sentinel = path.join(target, MANAGED_SENTINEL_NAME);
 	if (fs.existsSync(target) && !fs.existsSync(sentinel)) {
 		console.log(`[agent-setup] Skipping user-owned plugin dir at ${target}`);
 		return;
 	}
-	await syncDir(bundledPluginDir, target, (relativePath) => {
-		const [dir, skillName] = relativePath.split(path.sep);
-		return dir === "skills" && disabledSkills.has(skillName ?? "");
-	});
+	const synthesized = claudePluginManifest(source);
+	await syncDir(
+		source.dir,
+		target,
+		(relativePath) => {
+			const [dir, skillName] = relativePath.split(path.sep);
+			if (!CLAUDE_PLUGIN_CONTENTS.has(dir ?? "")) return true;
+			return (
+				dir === "skills" &&
+				isSkillDisabled(disabledSkills, source.name, skillName ?? "")
+			);
+		},
+		synthesized
+			? { [path.join(".claude-plugin", "plugin.json")]: synthesized }
+			: {},
+	);
 	writeFileIfChanged(sentinel, `${MANAGED_SKILL_MARKER}\n`, 0o644);
 }
 
 function readPluginSkill(
-	bundledPluginDir: string,
+	sourceDir: string,
 	pluginSkill: string,
 ): string | null {
-	const sourcePath = path.join(
-		bundledPluginDir,
-		"skills",
-		pluginSkill,
-		"SKILL.md",
-	);
+	const sourcePath = path.join(sourceDir, "skills", pluginSkill, "SKILL.md");
 	if (!fs.existsSync(sourcePath)) return null;
 	return fs.readFileSync(sourcePath, "utf-8");
 }
 
 /**
- * Every skill in the bundled plugin ships everywhere automatically unless the
- * user disabled it — adding a skill to plugins/superset/skills/ requires no
- * code change here. Returns null on enumeration failure: the caller must
- * abort (an empty desired set would make the reaper delete every
- * previously-provisioned skill).
+ * Every skill in a source ships everywhere automatically unless the user
+ * disabled it — adding a skill to plugins/superset/skills/ requires no code
+ * change here. Returns null on enumeration failure, which the caller must
+ * treat as "keep whatever this source already provisioned": an empty desired
+ * set would hand every one of its directories to the reaper.
  */
-function listBundledSkills(bundledPluginDir: string): string[] | null {
-	const skillsDir = path.join(bundledPluginDir, "skills");
+function listSourceSkills(sourceDir: string): string[] | null {
+	// A missing source directory is one we cannot see — the marketplace clone
+	// is gone, or was never fetched on this machine — and must not read as
+	// "ships nothing", which would reap skills that are still installed. A
+	// source that exists and has no skills/ genuinely ships none, so its stale
+	// directories should go.
+	if (!fs.existsSync(sourceDir)) return null;
+	const skillsDir = path.join(sourceDir, "skills");
+	if (!fs.existsSync(skillsDir)) return [];
 	try {
 		return fs
 			.readdirSync(skillsDir, { withFileTypes: true })
@@ -190,7 +323,7 @@ function listBundledSkills(bundledPluginDir: string): string[] | null {
 			)
 			.map((entry) => entry.name);
 	} catch (error) {
-		console.warn("[agent-setup] Failed to enumerate bundled skills:", error);
+		console.warn(`[agent-setup] Failed to enumerate ${skillsDir}:`, error);
 		return null;
 	}
 }
@@ -207,6 +340,22 @@ async function copyBundledExtras(
 			path.join(targetDir, entry.name),
 			{ recursive: true },
 		);
+	}
+}
+
+/** Directories under `root` that this source provisioned on an earlier run. */
+function provisionedDirsFor(root: string, sourceName: string): string[] {
+	if (!fs.existsSync(root)) return [];
+	try {
+		return fs
+			.readdirSync(root, { withFileTypes: true })
+			.filter(
+				(entry) =>
+					entry.isDirectory() && entry.name.startsWith(`${sourceName}-`),
+			)
+			.map((entry) => entry.name);
+	} catch {
+		return [];
 	}
 }
 
@@ -263,64 +412,85 @@ export async function createManagedSkills(
 		MANAGED_COMMAND_NAMESPACE,
 	);
 
-	try {
-		await provisionClaudePlugin(
-			bundledPluginDir,
-			path.join(homeDir, ".claude"),
-			disabledSkills,
-		);
-	} catch (error) {
-		console.warn("[agent-setup] Failed to provision Claude plugin:", error);
-	}
-
-	const bundledSkills = listBundledSkills(bundledPluginDir);
-	if (bundledSkills === null) {
-		console.warn(
-			"[agent-setup] Skipping skill provisioning and reaping — bundled plugin unreadable",
-		);
-		return;
-	}
-
+	const sources = resolveSources(bundledPluginDir, options.pluginSources);
+	const desiredClaudeDirs = new Set<string>();
 	const desiredAgentsDirs = new Set<string>();
-	for (const pluginSkill of bundledSkills) {
-		if (disabledSkills.has(pluginSkill)) continue;
-		// Prefixed dir name carries the namespace for agents without plugin
-		// support; frontmatter `name` is rewritten to match because the skill
-		// spec requires name == parent directory.
-		const dirName = `${MANAGED_COMMAND_NAMESPACE}-${pluginSkill}`;
-		try {
-			const raw = readPluginSkill(bundledPluginDir, pluginSkill);
-			if (raw === null) continue;
-			desiredAgentsDirs.add(dirName);
-			const targetDir = path.join(agentsSkillsRoot, dirName);
-			const skillMdPath = path.join(targetDir, "SKILL.md");
-			if (isUserOwnedFile(skillMdPath)) {
-				console.log(
-					`[agent-setup] Skipping user-owned skill at ${skillMdPath}`,
-				);
-				continue;
+
+	for (const source of sources) {
+		// Claimed before anything is written, and kept even when provisioning
+		// fails below: a half-written directory is still this source's, and
+		// reaping it would delete a plugin the user still has installed.
+		desiredClaudeDirs.add(source.name);
+
+		const sourceSkills = listSourceSkills(source.dir);
+		if (sourceSkills === null) {
+			for (const existing of provisionedDirsFor(
+				agentsSkillsRoot,
+				source.name,
+			)) {
+				desiredAgentsDirs.add(existing);
 			}
-			fs.mkdirSync(targetDir, { recursive: true });
-			writeFileIfChanged(
-				skillMdPath,
-				withManagedMarker(setFrontmatterName(raw, dirName)),
-				0o644,
+			console.warn(
+				`[agent-setup] Skipping ${source.name}: source unreadable, keeping what it already provisioned`,
 			);
-			await copyBundledExtras(
-				path.join(bundledPluginDir, "skills", pluginSkill),
-				targetDir,
+			continue;
+		}
+
+		try {
+			await provisionClaudePlugin(
+				source,
+				path.join(homeDir, ".claude"),
+				disabledSkills,
 			);
 		} catch (error) {
 			console.warn(
-				`[agent-setup] Failed to provision skill ${pluginSkill}:`,
+				`[agent-setup] Failed to provision Claude plugin ${source.name}:`,
 				error,
 			);
+		}
+
+		for (const pluginSkill of sourceSkills) {
+			if (isSkillDisabled(disabledSkills, source.name, pluginSkill)) continue;
+			// Prefixed dir name carries the namespace for agents without plugin
+			// support; frontmatter `name` is rewritten to match because the skill
+			// spec requires name == parent directory.
+			const dirName = `${source.name}-${pluginSkill}`;
+			try {
+				const raw = readPluginSkill(source.dir, pluginSkill);
+				if (raw === null) continue;
+				desiredAgentsDirs.add(dirName);
+				const targetDir = path.join(agentsSkillsRoot, dirName);
+				const skillMdPath = path.join(targetDir, "SKILL.md");
+				if (isUserOwnedFile(skillMdPath)) {
+					console.log(
+						`[agent-setup] Skipping user-owned skill at ${skillMdPath}`,
+					);
+					continue;
+				}
+				fs.mkdirSync(targetDir, { recursive: true });
+				writeFileIfChanged(
+					skillMdPath,
+					withManagedMarker(setFrontmatterName(raw, dirName)),
+					0o644,
+				);
+				await copyBundledExtras(
+					path.join(source.dir, "skills", pluginSkill),
+					targetDir,
+				);
+			} catch (error) {
+				console.warn(
+					`[agent-setup] Failed to provision skill ${dirName}:`,
+					error,
+				);
+			}
 		}
 	}
 
 	const desiredCommandFiles = new Set<string>();
 	for (const pluginSkill of COMMAND_SKILLS) {
-		if (disabledSkills.has(pluginSkill)) continue;
+		if (isSkillDisabled(disabledSkills, BUNDLED_SOURCE_NAME, pluginSkill)) {
+			continue;
+		}
 		const fileName = `${pluginSkill}.md`;
 		try {
 			const raw = readPluginSkill(bundledPluginDir, pluginSkill);
@@ -342,11 +512,12 @@ export async function createManagedSkills(
 	}
 
 	try {
-		// ~/.claude/skills holds only the plugin dir; anything else marker-bearing
-		// there (including dirs from earlier versions of this mechanism) is stale.
+		// ~/.claude/skills holds one directory per source; anything else
+		// marker-bearing there — a dir from an earlier version of this
+		// mechanism, or a plugin since uninstalled — is stale.
 		await reapStaleSkillDirs(
 			path.join(homeDir, ".claude", "skills"),
-			new Set([CLAUDE_PLUGIN_DIR_NAME]),
+			desiredClaudeDirs,
 		);
 		await reapStaleSkillDirs(agentsSkillsRoot, desiredAgentsDirs);
 		await reapStaleCommands(commandNamespaceDir, desiredCommandFiles);
@@ -376,9 +547,11 @@ export async function provisionManagedClaudePluginAt(
 		);
 		return;
 	}
-	await provisionClaudePlugin(
+	const disabledSkills = new Set(options.disabledSkills ?? []);
+	for (const source of resolveSources(
 		bundledPluginDir,
-		claudeDir,
-		new Set(options.disabledSkills ?? []),
-	);
+		options.pluginSources,
+	)) {
+		await provisionClaudePlugin(source, claudeDir, disabledSkills);
+	}
 }
