@@ -16,9 +16,9 @@ import { z } from "zod";
 import { publicProcedure, router } from "../..";
 
 /**
- * Install state for the Plugins page. The catalog itself is static data the
- * renderer imports from @superset/shared/plugins; this router only owns the
- * installed set and the materialization side effects (main/lib/plugin-installs).
+ * Machine-local plugin state: what is materialized here and the side effects of
+ * changing that. The catalog itself comes from the account over the API
+ * (GET /api/plugins), so it is the same on every machine.
  */
 export const createPluginsRouter = () => {
 	return router({

@@ -1,3 +1,4 @@
+export * from "./manifests.generated";
 /**
  * The curated plugin catalog the desktop Plugins page renders and installs
  * from. Static for the MVP — each entry is shaped as a pre-resolved plugin
@@ -63,6 +64,23 @@ export interface PluginCatalogEntry {
 	mcpServers: Record<string, PluginMcpServerConfig>;
 	/** Names of skills the plugin bundles (Codex manifests point `skills` at a directory; a resolved entry lists them). */
 	skills?: readonly string[];
+	/**
+	 * What the user must connect before the plugin's tools work, mirrored from
+	 * the manifest's `extensions.superset.auth`. Absent means the plugin needs
+	 * no credential. Only the shape the UI renders — URLs and client ids stay
+	 * server-side.
+	 */
+	auth?: readonly {
+		type: "oauth2" | "api_key";
+		label?: string | null;
+		inputs?: readonly {
+			name: string;
+			label?: string;
+			placeholder?: string;
+			required?: boolean;
+			secret?: boolean;
+		}[];
+	}[];
 	/** Curation attribute, not manifest vocabulary: surfaces in Featured. */
 	featured?: boolean;
 }
@@ -240,6 +258,7 @@ export const PLUGIN_CATALOG: readonly PluginCatalogEntry[] = [
 		version: "1.0.0",
 		description: "Plan and build products",
 		interface: { displayName: "Linear", category: "Productivity" },
+		auth: [{ type: "oauth2" }],
 		mcpServers: {
 			linear: { type: "http", url: "https://mcp.linear.app/mcp" },
 		},
@@ -250,6 +269,7 @@ export const PLUGIN_CATALOG: readonly PluginCatalogEntry[] = [
 		version: "1.0.0",
 		description: "Work with issues, pull requests, and repos",
 		interface: { displayName: "GitHub", category: "Developer tools" },
+		auth: [{ type: "oauth2" }],
 		mcpServers: {
 			github: { type: "http", url: "https://api.githubcopilot.com/mcp/" },
 		},

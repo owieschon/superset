@@ -15,11 +15,12 @@ interface PluginCardProps {
 	plugin: PluginCatalogEntry;
 	/** Installed record OR satisfied by the user's own config — one state. */
 	isInstalled: boolean;
+	/** Installed AND usable: a plugin needing auth is not done until connected. */
+	isConnected: boolean;
 	/** Installed but disabled: record kept, nothing materialized. */
 	isDisabled: boolean;
 	isBusy: boolean;
 	onOpen: (plugin: PluginCatalogEntry) => void;
-	onInstall: (plugin: PluginCatalogEntry) => void;
 	onUninstall: (plugin: PluginCatalogEntry) => void;
 	onSetEnabled: (name: string, enabled: boolean) => void;
 }
@@ -27,16 +28,16 @@ interface PluginCardProps {
 export function PluginCard({
 	plugin,
 	isInstalled,
+	isConnected,
 	isDisabled,
 	isBusy,
 	onOpen,
-	onInstall,
 	onUninstall,
 	onSetEnabled,
 }: PluginCardProps) {
 	const { t } = useLingui();
 	return (
-		// biome-ignore lint/a11y/useSemanticElements: the card nests real buttons (Install, ··· menu); a native <button> cannot contain them
+		// biome-ignore lint/a11y/useSemanticElements: the card nests a real button (the ··· menu); a native <button> cannot contain it
 		<div
 			role="button"
 			tabIndex={0}
@@ -57,8 +58,15 @@ export function PluginCard({
 				<div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
 					{plugin.interface.displayName}
 					<PluginKindBadges plugin={plugin} />
-					{isInstalled && !isDisabled && (
+					{isConnected && !isDisabled && (
 						<LuCheck className="size-3.5 shrink-0 text-muted-foreground" />
+					)}
+					{isInstalled && !isConnected && !isDisabled && (
+						<span className="shrink-0 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+							<Trans id="dashboard.plugins.card.needsConnection">
+								Not connected
+							</Trans>
+						</span>
 					)}
 					{isDisabled && (
 						<span className="shrink-0 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
@@ -108,24 +116,11 @@ export function PluginCard({
 							onSelect={() => onUninstall(plugin)}
 						>
 							<LuTrash2 className="size-4" />
-							<Trans id="dashboard.plugins.card.uninstall">Uninstall</Trans>
+							<Trans id="dashboard.plugins.card.remove">Remove</Trans>
 						</DropdownMenuItem>
 					</DropdownMenuContent>
 				</DropdownMenu>
-			) : (
-				<Button
-					variant="outline"
-					size="sm"
-					className="shrink-0 rounded-full"
-					disabled={isBusy}
-					onClick={(event) => {
-						event.stopPropagation();
-						onInstall(plugin);
-					}}
-				>
-					<Trans id="dashboard.plugins.card.install">Install</Trans>
-				</Button>
-			)}
+			) : null}
 		</div>
 	);
 }

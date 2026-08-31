@@ -1,7 +1,6 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import {
 	isPluginExternallyConfigured,
-	PLUGIN_CATALOG,
 	PLUGIN_CATEGORIES,
 	type PluginCatalogEntry,
 } from "@superset/shared/plugins";
@@ -15,6 +14,10 @@ import { useMemo, useState } from "react";
 import { LuSearch, LuSettings2 } from "react-icons/lu";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { PluginIcon } from "renderer/routes/_authenticated/_dashboard/plugins/components/PluginIcon";
+import {
+	type CatalogPlugin,
+	usePluginCatalog,
+} from "renderer/routes/_authenticated/_dashboard/plugins/hooks/usePluginCatalog";
 import { usePluginMutations } from "renderer/routes/_authenticated/_dashboard/plugins/hooks/usePluginMutations";
 import { ManageInstalledDialog } from "./components/ManageInstalledDialog";
 import { PluginCard } from "./components/PluginCard";
@@ -42,13 +45,33 @@ export function PluginsView() {
 	);
 	const { data: externalServers } =
 		electronTrpc.plugins.listExternalServers.useQuery();
+	const {
+		plugins: catalog,
+		isLoading: isCatalogLoading,
+		error: catalogError,
+	} = usePluginCatalog();
+
 	// One state: an install record OR the user's own config both count as
 	// installed (having it = installed).
 	const isInstalled = (plugin: PluginCatalogEntry) =>
 		installedNames.has(plugin.name) ||
 		isPluginExternallyConfigured(plugin, externalServers ?? []);
 
-	const { install, uninstall, setEnabled, isBusy } = usePluginMutations();
+	// Installed is not the same as usable: a plugin that needs auth is only
+	// done once an account is connected, so the card should not claim otherwise.
+	const connectedNames = useMemo(
+		() =>
+			new Set(
+				catalog
+					.filter((entry) => !entry.auth || entry.accounts.length > 0)
+					.map((entry) => entry.name),
+			),
+		[catalog],
+	);
+	const isConnected = (plugin: CatalogPlugin) =>
+		isInstalled(plugin) && connectedNames.has(plugin.name);
+
+	const { uninstall, setEnabled, isBusy } = usePluginMutations();
 
 	const handleOpen = (plugin: PluginCatalogEntry) => {
 		navigate({
@@ -59,8 +82,9 @@ export function PluginsView() {
 
 	const query = search.trim().toLowerCase();
 	const visiblePlugins = useMemo(() => {
-		if (query === "") return [...PLUGIN_CATALOG];
-		return PLUGIN_CATALOG.filter((plugin) =>
+		const all: CatalogPlugin[] = catalog;
+		if (query === "") return all;
+		return all.filter((plugin) =>
 			[
 				plugin.name,
 				plugin.interface.displayName,
@@ -71,7 +95,7 @@ export function PluginsView() {
 				.toLowerCase()
 				.includes(query),
 		);
-	}, [query]);
+	}, [query, catalog]);
 
 	const installedPlugins = visiblePlugins.filter(isInstalled);
 	const featured = visiblePlugins.filter((plugin) => plugin.featured);
@@ -84,15 +108,15 @@ export function PluginsView() {
 		),
 	})).filter(({ plugins }) => plugins.length > 0);
 
-	const renderCard = (plugin: PluginCatalogEntry) => (
+	const renderCard = (plugin: CatalogPlugin) => (
 		<PluginCard
 			key={plugin.name}
 			plugin={plugin}
 			isInstalled={isInstalled(plugin)}
+			isConnected={isConnected(plugin)}
 			isDisabled={disabledNames.has(plugin.name)}
 			isBusy={isBusy}
 			onOpen={handleOpen}
-			onInstall={(target) => install(target.name)}
 			onUninstall={(target) => uninstall(target.name)}
 			onSetEnabled={setEnabled}
 		/>
@@ -224,13 +248,32 @@ export function PluginsView() {
 						</section>
 					))}
 
-					{visiblePlugins.length === 0 && (
+					{visiblePlugins.length === 0 && query !== "" && (
 						<p className="py-8 text-center text-sm text-muted-foreground">
 							<Trans id="dashboard.plugins.noSearchMatches">
 								No plugins match "{search.trim()}"
 							</Trans>
 						</p>
 					)}
+
+					{catalogError && (
+						<p className="py-8 text-center text-sm text-muted-foreground">
+							<Trans id="dashboard.plugins.catalogUnavailable">
+								Could not load plugins. Check your connection and try again.
+							</Trans>
+						</p>
+					)}
+
+					{!catalogError &&
+						!isCatalogLoading &&
+						catalog.length === 0 &&
+						query === "" && (
+							<p className="py-8 text-center text-sm text-muted-foreground">
+								<Trans id="dashboard.plugins.catalogEmpty">
+									No plugins available yet.
+								</Trans>
+							</p>
+						)}
 
 					<ManageInstalledDialog
 						open={isManageOpen}
