@@ -119,6 +119,23 @@ export default command({
 		);
 		if (missing.length) throw missingInputsError(name, missing, declared);
 
+		// `plugins check` rejects a secret input on an oauth2 method, but this
+		// reads the installed plugin.json, which a marketplace outside that check
+		// may have written. The URL is opened in a browser and printed to the
+		// terminal, so a secret reaching it lands in history and scrollback.
+		const secrets = declared.filter(
+			(input) => input.secret && provided[input.name],
+		);
+		if (secrets.length) {
+			throw new CLIError(
+				`"${name}" declares ${secrets
+					.map((input) => `"${input.name}"`)
+					.join(
+						", ",
+					)} as secret on its oauth2 method. A browser authorization URL cannot carry a secret; report this to the plugin's author.`,
+			);
+		}
+
 		const params = new URLSearchParams({ ...provided, method: auth.type });
 		const url = `${getApiUrl()}/api/plugins/${name}/connect?${params}`;
 

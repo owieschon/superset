@@ -211,6 +211,27 @@ export interface InstalledPlugin {
 	marketplace: string;
 }
 
+export class AmbiguousPluginError extends Error {
+	constructor(
+		readonly pluginName: string,
+		readonly marketplaces: string[],
+	) {
+		super(
+			`"${pluginName}" is installed from more than one marketplace (${marketplaces.join(", ")}). Name one with plugin@marketplace.`,
+		);
+	}
+}
+
+/**
+ * The manifest to resolve a plugin against, for this user.
+ *
+ * Refuses rather than picks when a name is installed from several
+ * marketplaces. The manifest decides the token_url and the proxy target, and a
+ * connection is keyed by plugin *name* — so silently answering with the
+ * alphabetically-first install is how a credential granted for one
+ * marketplace's plugin ends up bound to another's URL. Callers that know which
+ * one they mean pass `marketplace` and never see this.
+ */
 export async function installedPlugin(
 	userId: string,
 	pluginName: string,
@@ -231,7 +252,14 @@ export async function installedPlugin(
 			),
 		)
 		.orderBy(asc(pluginInstalls.marketplace))
-		.limit(1);
+		.limit(2);
+
+	if (rows.length > 1) {
+		throw new AmbiguousPluginError(
+			pluginName,
+			rows.map((entry) => entry.marketplace),
+		);
+	}
 
 	const row = rows[0];
 	if (!row) return null;
@@ -291,6 +319,16 @@ export async function bundledSource(
 	return { repo: row.repo, ref: row.ref ?? "HEAD" };
 }
 
+/**
+ * Turns an ambiguous-plugin refusal into a response. Returns null for anything
+ * else, so a route can rethrow what it does not own.
+ */
+export function pluginErrorResponse(error: unknown): Response | null {
+	return error instanceof AmbiguousPluginError
+		? Response.json({ error: error.message }, { status: 409 })
+		: null;
+}
+
 export function manifestAuth(manifest: PluginManifest) {
 	return supersetExtension(manifest)?.auth;
 }
@@ -314,6 +352,23 @@ export interface PluginContext {
  * by id instead.
  */
 export async function pluginContext(
+	userId: string,
+	pluginName: string,
+): Promise<
+	| { ok: true; context: PluginContext }
+	| { ok: false; status: number; error: string }
+> {
+	try {
+		return await resolvePluginContext(userId, pluginName);
+	} catch (error) {
+		if (error instanceof AmbiguousPluginError) {
+			return { ok: false, status: 409, error: error.message };
+		}
+		throw error;
+	}
+}
+
+async function resolvePluginContext(
 	userId: string,
 	pluginName: string,
 ): Promise<

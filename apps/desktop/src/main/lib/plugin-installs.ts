@@ -19,6 +19,7 @@ import {
 import log from "electron-log/main";
 import { resolveBundledCliPath } from "main/lib/bundled-cli";
 import { localDb } from "main/lib/local-db";
+import { createSerialQueue } from "main/lib/serial-queue";
 
 /**
  * Installed-plugin state and its materialization into agent configs. State
@@ -30,6 +31,21 @@ import { localDb } from "main/lib/local-db";
  */
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * One CLI run at a time, in call order.
+ *
+ * install and remove both provision declaratively — each writes the desired set
+ * and reaps the rest — so two overlapping runs race on the same directories. A
+ * remove that starts while an install is still reading its source finishes
+ * first, and the install then re-provisions the skills the remove just took
+ * away. Serializing is what makes the last call the one that wins.
+ */
+const pluginCliQueue = createSerialQueue();
+
+function queuePluginCli(args: string[]): Promise<void> {
+	return pluginCliQueue(() => runPluginCli(args));
+}
 
 /**
  * Materializes a plugin's content and skills by running the bundled CLI.
@@ -123,7 +139,7 @@ export function installPlugin(name: string): InstalledPlugin[] | null {
 	syncInstalledPluginMcpServers();
 	// --update because the CLI refuses a second install otherwise, which is the
 	// gate that exists so a manifest change is asked for rather than applied.
-	void runPluginCli(["install", name, "--update"]);
+	void queuePluginCli(["install", name, "--update"]);
 	return next;
 }
 
@@ -133,7 +149,7 @@ export function uninstallPlugin(name: string): InstalledPlugin[] {
 	syncInstalledPluginMcpServers();
 	// Reaps the skill folders this plugin provisioned, leaving hand-written
 	// ones alone — the same removal the CLI does.
-	void runPluginCli(["remove", name]);
+	void queuePluginCli(["remove", name]);
 	return next;
 }
 

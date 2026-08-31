@@ -49,7 +49,14 @@ export async function GET(
 		return settingsRedirect(plugin, { error: "unauthorized" });
 	}
 
-	const manifest = await installedManifest(state.userId, plugin);
+	// A name installed from two marketplaces cannot be resolved here: the
+	// callback knows the plugin, not which install started the flow.
+	let manifest: Awaited<ReturnType<typeof installedManifest>>;
+	try {
+		manifest = await installedManifest(state.userId, plugin);
+	} catch {
+		return settingsRedirect(plugin, { error: "ambiguous_plugin" });
+	}
 	const authSpec = manifest
 		? authMethod(manifestAuth(manifest), state.authMethod)
 		: null;

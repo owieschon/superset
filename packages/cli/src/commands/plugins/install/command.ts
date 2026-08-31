@@ -107,9 +107,18 @@ export default command({
 				if (missing.length) {
 					throw missingInputsError(name, missing, declared);
 				}
+				// POST with a JSON body, never a query string: these are credential
+				// values, and a URL reaches browser history, proxy logs, and the
+				// Referer header. The route rejects api_key over GET for the same
+				// reason, so this is also the only shape it accepts.
 				const created = await apiRequest<{ account: string | null }>(
 					ctx.bearer,
-					`/api/plugins/${name}/connect?${new URLSearchParams(provided)}`,
+					`/api/plugins/${encodeURIComponent(name)}/connect`,
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify(provided),
+					},
 				);
 				connection = `connected as ${created.account ?? "unknown"}`;
 			} else {

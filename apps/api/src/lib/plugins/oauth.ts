@@ -1,8 +1,9 @@
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { env } from "@/env";
 import {
 	type AuthIdentity,
+	credentialFetch,
 	type PluginAuthMethod,
 	readPath,
 	resolveTemplate,
@@ -150,11 +151,11 @@ export async function exchangeCode(
 		body.set("client_secret", credentials.clientSecret);
 	}
 
-	const response = await fetch(resolveTemplate(auth.token_url, scope), {
-		method: "POST",
-		headers,
-		body,
-	});
+	const response = await credentialFetch(
+		resolveTemplate(auth.token_url, scope),
+		{ method: "POST", headers, body },
+		"token_url",
+	);
 
 	if (!response.ok) {
 		throw new Error(
@@ -215,14 +216,18 @@ export async function resolveIdentity(
 
 	const method = identity.method ?? "GET";
 	const headers = resolveTemplateDeep(identity.headers ?? {}, scope);
-	const response = await fetch(resolveTemplate(identity.url, scope), {
-		method,
-		headers,
-		body:
-			method === "POST" && identity.body !== undefined
-				? JSON.stringify(resolveTemplateDeep(identity.body, scope))
-				: undefined,
-	});
+	const response = await credentialFetch(
+		resolveTemplate(identity.url, scope),
+		{
+			method,
+			headers,
+			body:
+				method === "POST" && identity.body !== undefined
+					? JSON.stringify(resolveTemplateDeep(identity.body, scope))
+					: undefined,
+		},
+		"identity",
+	);
 
 	if (!response.ok) {
 		throw new Error(

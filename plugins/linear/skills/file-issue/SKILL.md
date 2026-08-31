@@ -13,11 +13,15 @@ can start without asking you a question.
 ## 1. Search before you create
 
 Search for the error text and for the feature name separately — people describe the same bug
-in words that share no vocabulary. Check closed issues too: a bug that was closed and came
-back is a regression, which is a more urgent and differently-shaped report than a new bug.
+in words that share no vocabulary. Check closed issues too, but do not read "closed" as
+"regression": most closed duplicates were closed during triage, not fixed. Call it a
+regression only when the issue shows a fix that shipped, or it was reopened — then it is a
+more urgent and differently-shaped report than a new bug.
 
-Found a duplicate? Comment the new evidence on it instead. Two issues for one bug means two
-people investigate it.
+Found a duplicate? Comment the new evidence on it instead of opening a second issue. Show the
+user the duplicate you matched and the comment you intend to leave, and post it only once
+they say to. A wrong match buries a real bug under an unrelated issue, and nobody goes
+looking for what they think is already tracked.
 
 ## 2. Establish what actually happens
 
@@ -49,10 +53,15 @@ Priority is about consequence, not annoyance: data loss and broken auth are urge
 misaligned button is not, however visible. Set an estimate only if you understand the fix
 well enough to defend it; a wrong estimate is worse than none.
 
-## 5. Confirm
+## 5. Show it before you create it
 
-Report the identifier and URL, plus the team, priority, and labels you set, so the requester
-can correct a routing mistake immediately rather than after it goes unread for a week.
+Print the title, body, team, priority, and labels, and ask the user to confirm. Filing is a
+write to a shared backlog that other people triage and get notified about; a misrouted or
+duplicate issue costs someone else's attention to undo. Reporting the result afterwards is
+not confirmation — by then the write has happened.
+
+Once they confirm, create it and report the identifier and URL along with what you set, so a
+routing mistake gets corrected immediately rather than after it goes unread for a week.
 
 ## Anti-patterns
 

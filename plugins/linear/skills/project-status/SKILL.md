@@ -48,11 +48,16 @@ Most updates end with nothing to do, so nothing is done. If a decision, a person
 descope would help, state it as the last line with a name and a date attached. One ask is
 better than three, because three get triaged and one gets answered.
 
-## 5. Post it
+## 5. Show the draft, then post it
 
-Write the update on the project so it lives next to the work and enters the project's
-history — a status update in a chat message is gone by the next morning. Keep it to a few
-short paragraphs: trajectory, what moved, risks, the ask.
+Print the draft in full and stop. This skill drafts; publishing is the user's call. A status
+update is read by stakeholders and enters the project's permanent history, and a wrong
+trajectory or a risk named for the wrong person is not something a follow-up correction
+undoes — so an unreviewed post is worse than a late one.
+
+Once they approve it, write it on the project so it lives next to the work rather than in a
+chat message that is gone by the next morning. Keep it to a few short paragraphs: trajectory,
+what moved, risks, the ask. If they asked only for a draft, stop after printing it.
 
 ## Anti-patterns
 

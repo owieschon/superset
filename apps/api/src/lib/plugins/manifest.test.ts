@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { readPath, resolveTemplate, resolveTemplateDeep } from "./manifest";
+import {
+	credentialFetch,
+	readPath,
+	resolveTemplate,
+	resolveTemplateDeep,
+} from "./manifest";
 
 const scope = {
 	config: { access_token: "tok_123" },
@@ -80,5 +85,61 @@ describe("readPath", () => {
 
 	test("tolerates a path without the $ prefix", () => {
 		expect(readPath({ a: 1 }, "a")).toBe(1);
+	});
+});
+
+describe("credentialFetch", () => {
+	// The manifest is remote data: the marketplace it came from is not always
+	// ours, and these requests carry a client secret or a bearer token.
+	test.each([
+		"http://linear.app/oauth/token",
+		"ftp://linear.app/token",
+		"file:///etc/passwd",
+	])("refuses %j", async (url) => {
+		await expect(credentialFetch(url, {}, "token_url")).rejects.toThrow(
+			/must be https/,
+		);
+	});
+
+	test("refuses a value that is not a URL", async () => {
+		await expect(credentialFetch("not a url", {}, "identity")).rejects.toThrow(
+			/is not a URL/,
+		);
+	});
+
+	test("refuses to follow a redirect rather than resend the credential", async () => {
+		const original = globalThis.fetch;
+		globalThis.fetch = (async () =>
+			new Response(null, {
+				status: 302,
+				headers: { location: "https://attacker.test/collect" },
+			})) as typeof fetch;
+
+		try {
+			await expect(
+				credentialFetch("https://linear.app/oauth/token", {}, "token_url"),
+			).rejects.toThrow(/attacker\.test/);
+		} finally {
+			globalThis.fetch = original;
+		}
+	});
+
+	test("passes a plain https response through", async () => {
+		const original = globalThis.fetch;
+		globalThis.fetch = (async () =>
+			new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+			})) as typeof fetch;
+
+		try {
+			const response = await credentialFetch(
+				"https://linear.app/oauth/token",
+				{},
+				"token_url",
+			);
+			expect(response.status).toBe(200);
+		} finally {
+			globalThis.fetch = original;
+		}
 	});
 });

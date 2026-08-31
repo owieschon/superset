@@ -2,6 +2,7 @@ import { auth } from "@superset/auth/server";
 import {
 	installedManifest,
 	manifestAuth,
+	pluginErrorResponse,
 	upsertConnection,
 } from "@/lib/plugins/connections";
 import { authMethod } from "@/lib/plugins/manifest";
@@ -33,7 +34,14 @@ export async function GET(
 	const url = new URL(request.url);
 	const organizationId = url.searchParams.get("organizationId");
 
-	const manifest = await installedManifest(session.user.id, plugin);
+	let manifest: Awaited<ReturnType<typeof installedManifest>>;
+	try {
+		manifest = await installedManifest(session.user.id, plugin);
+	} catch (error) {
+		const response = pluginErrorResponse(error);
+		if (!response) throw error;
+		return response;
+	}
 	if (!manifest) {
 		return Response.json(
 			{ error: `Plugin "${plugin}" is not installed` },
@@ -114,7 +122,14 @@ export async function POST(
 	const organizationId =
 		new URL(request.url).searchParams.get("organizationId") ?? null;
 
-	const manifest = await installedManifest(session.user.id, plugin);
+	let manifest: Awaited<ReturnType<typeof installedManifest>>;
+	try {
+		manifest = await installedManifest(session.user.id, plugin);
+	} catch (error) {
+		const response = pluginErrorResponse(error);
+		if (!response) throw error;
+		return response;
+	}
 	if (!manifest) {
 		return Response.json(
 			{ error: `Plugin "${plugin}" is not installed` },

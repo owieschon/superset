@@ -5,6 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { BundledSource } from "./connections";
 import {
+	credentialFetch,
 	type PluginManifest,
 	resolveTemplate,
 	resolveTemplateDeep,
@@ -39,15 +40,21 @@ async function rpc(
 	method: string,
 	params: unknown,
 ): Promise<unknown> {
-	const response = await fetch(url, {
-		method: "POST",
-		headers: {
-			"content-type": "application/json",
-			accept: "application/json, text/event-stream",
-			...headers,
+	// `headers` carries the connection's bound credential, so this is https-only
+	// and does not follow a redirect to a host the manifest did not name.
+	const response = await credentialFetch(
+		url,
+		{
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				accept: "application/json, text/event-stream",
+				...headers,
+			},
+			body: JSON.stringify({ jsonrpc: "2.0", id: REQUEST_ID, method, params }),
 		},
-		body: JSON.stringify({ jsonrpc: "2.0", id: REQUEST_ID, method, params }),
-	});
+		"mcp",
+	);
 
 	if (response.status === 401 || response.status === 403) {
 		throw new PluginDispatchError(

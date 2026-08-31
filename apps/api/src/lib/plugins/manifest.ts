@@ -161,3 +161,40 @@ export function readPath(source: unknown, path: string): unknown {
 
 	return current;
 }
+
+/**
+ * A fetch for requests that carry a credential to a manifest-supplied URL.
+ *
+ * Two things the default does wrong here. It will happily dial `http://`, and
+ * a manifest is remote data — the marketplace it came from is not always ours.
+ * And it follows redirects, re-sending the Authorization header (or a client
+ * secret in the body) to whatever host the 302 names, which turns any provider
+ * with an open redirect into a credential exfiltration path.
+ *
+ * So: https only, and a redirect is an error rather than a second request.
+ */
+export async function credentialFetch(
+	url: string,
+	init: RequestInit,
+	what: string,
+): Promise<Response> {
+	let parsed: URL;
+	try {
+		parsed = new URL(url);
+	} catch {
+		throw new Error(`${what} URL is not a URL: ${url}`);
+	}
+	if (parsed.protocol !== "https:") {
+		throw new Error(
+			`${what} URL must be https, got ${parsed.protocol}//${parsed.host}`,
+		);
+	}
+
+	const response = await fetch(url, { ...init, redirect: "manual" });
+	if (response.status >= 300 && response.status < 400) {
+		throw new Error(
+			`${what} URL redirected to ${response.headers.get("location") ?? "an unnamed location"}; refusing to resend the credential.`,
+		);
+	}
+	return response;
+}

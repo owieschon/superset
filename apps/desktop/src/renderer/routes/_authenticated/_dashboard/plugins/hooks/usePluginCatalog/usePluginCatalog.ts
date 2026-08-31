@@ -4,7 +4,7 @@ import type {
 } from "@superset/shared/plugins";
 import { useQuery } from "@tanstack/react-query";
 import { env } from "renderer/env.renderer";
-import { useAuthToken } from "renderer/lib/auth-client";
+import { authClient, useAuthToken } from "renderer/lib/auth-client";
 
 export interface AuthInput {
 	name: string;
@@ -68,7 +68,8 @@ interface CatalogResponse {
 
 /**
  * Install state lives on the account and nowhere else, so every mutation that
- * changes it has exactly one key to invalidate.
+ * changes it has exactly one key to invalidate. It is a prefix: the cached
+ * entry hangs off it per user, and React Query matches invalidation by prefix.
  */
 export const PLUGIN_CATALOG_KEY = ["plugin-catalog"] as const;
 
@@ -84,9 +85,16 @@ export function usePluginCatalog() {
 	// static key changes when auth arrives.
 	const token = useAuthToken();
 
+	// The cache outlives a sign-out, so a global key would let the next account
+	// render the previous one's installs and connected accounts while its own
+	// request is still in flight. Keyed by user id, not by the token: the token
+	// rotates on refresh and would evict a still-valid catalog every time.
+	const { data: session } = authClient.useSession();
+	const userId = session?.user?.id ?? null;
+
 	const query = useQuery({
-		queryKey: PLUGIN_CATALOG_KEY,
-		enabled: Boolean(token),
+		queryKey: [...PLUGIN_CATALOG_KEY, userId],
+		enabled: Boolean(token) && Boolean(userId),
 		queryFn: async (): Promise<CatalogPlugin[]> => {
 			const response = await fetch(`${env.NEXT_PUBLIC_API_URL}/api/plugins`, {
 				headers: { Authorization: `Bearer ${token}` },

@@ -92,16 +92,33 @@ export function PluginConnections({
 	// the way through rather than needing a separate Add step first — awaited,
 	// because connect resolves the manifest from the install row.
 	const authenticate = async () => {
-		if (!installed) {
-			try {
-				await onAdd();
-			} catch {
-				// The install mutation already surfaced why.
-				return;
-			}
+		// Always, not only when `installed` is false. That flag is the account's
+		// answer, and an account install done on another machine says nothing
+		// about whether this one has the skills and MCP config. Add is
+		// idempotent — a repeat install rewrites the record and re-provisions —
+		// so running it here is what converges the machine you are sitting at.
+		try {
+			await onAdd();
+		} catch {
+			// The install mutation already surfaced why.
+			return;
 		}
-		if (method === "api_key") connectApiKey({ inputs: values, method });
-		else connectOAuth(values, method);
+		if (method === "api_key") {
+			connectApiKey({ inputs: values, method });
+			return;
+		}
+
+		// The authorization URL is a browser navigation: it reaches history, the
+		// Referer header, and any proxy in between. Only this method's declared
+		// non-secret inputs go in it, whatever the form is still holding.
+		connectOAuth(
+			Object.fromEntries(
+				inputs
+					.filter((input) => !input.secret && values[input.name])
+					.map((input) => [input.name, values[input.name] as string]),
+			),
+			method,
+		);
 	};
 
 	return (
@@ -201,9 +218,13 @@ export function PluginConnections({
 							</label>
 							<Select
 								value={method}
-								onValueChange={(next) =>
-									setMethod(next as PluginAuthSpec["type"])
-								}
+								onValueChange={(next) => {
+									// Values belong to the method they were typed under. An
+									// API key left behind by a method switch would otherwise
+									// ride along into the oauth2 authorization URL.
+									setValues({});
+									setMethod(next as PluginAuthSpec["type"]);
+								}}
 							>
 								<SelectTrigger
 									id={`${pluginName}-auth-method`}

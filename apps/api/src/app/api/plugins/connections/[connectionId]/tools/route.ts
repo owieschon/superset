@@ -3,6 +3,7 @@ import {
 	bundledSource,
 	getConnection,
 	installedPlugin,
+	pluginErrorResponse,
 	templateScope,
 } from "@/lib/plugins/connections";
 import { listTools, PluginDispatchError } from "@/lib/plugins/dispatch";
@@ -23,7 +24,14 @@ export async function GET(
 		return Response.json({ error: "Connection not found" }, { status: 404 });
 	}
 
-	const install = await installedPlugin(session.user.id, connection.pluginName);
+	let install: Awaited<ReturnType<typeof installedPlugin>>;
+	try {
+		install = await installedPlugin(session.user.id, connection.pluginName);
+	} catch (error) {
+		const response = pluginErrorResponse(error);
+		if (!response) throw error;
+		return response;
+	}
 	if (!install) {
 		return Response.json(
 			{ error: `Plugin "${connection.pluginName}" is not installed` },

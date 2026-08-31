@@ -287,10 +287,15 @@ async function provisionClaudePlugin(
 	}
 	// A source we could not read keeps whatever it provisioned earlier: its
 	// skills are still installed, and rebuilding the tree without them would
-	// hand every one of them to the reaper.
+	// hand every one of them to the reaper. Disabling is the exception — that
+	// is a decision the user already made, and an unreadable source is no
+	// reason to hand a disabled skill back to the agent.
 	const unreadable = pluginSources
 		.filter((entry) => entry.skills === null)
-		.map((entry) => `skills${path.sep}${entry.source.name}-`);
+		.map((entry) => ({
+			name: entry.source.name,
+			prefix: `skills${path.sep}${entry.source.name}-`,
+		}));
 	await syncDir(
 		bundledPluginDir,
 		target,
@@ -303,7 +308,15 @@ async function provisionClaudePlugin(
 		},
 		claudeSkillTrees(pluginSources, disabledSkills),
 		(relativePath) =>
-			unreadable.some((prefix) => relativePath.startsWith(prefix)),
+			unreadable.some(
+				(entry) =>
+					relativePath.startsWith(entry.prefix) &&
+					!isSkillDisabled(
+						disabledSkills,
+						entry.name,
+						relativePath.slice(entry.prefix.length).split(path.sep)[0] ?? "",
+					),
+			),
 	);
 	writeFileIfChanged(sentinel, `${MANAGED_SKILL_MARKER}\n`, 0o644);
 }
@@ -470,6 +483,10 @@ export async function createManagedSkills(
 				agentsSkillsRoot,
 				source.name,
 			)) {
+				// `<source>-<skill>`; a skill the user disabled stays reaped even
+				// though we cannot re-enumerate the source to confirm it exists.
+				const skillName = existing.slice(source.name.length + 1);
+				if (isSkillDisabled(disabledSkills, source.name, skillName)) continue;
 				desiredAgentsDirs.add(existing);
 			}
 			continue;
@@ -504,6 +521,10 @@ export async function createManagedSkills(
 					targetDir,
 				);
 			} catch (error) {
+				// Keep what is already on disk: the read failed, which says nothing
+				// about whether the skill belongs there. Leaving it out of the
+				// desired set would hand it to the reaper over a transient EACCES.
+				desiredAgentsDirs.add(dirName);
 				console.warn(
 					`[agent-setup] Failed to provision skill ${dirName}:`,
 					error,
@@ -530,6 +551,9 @@ export async function createManagedSkills(
 			fs.mkdirSync(commandNamespaceDir, { recursive: true });
 			writeFileIfChanged(filePath, withManagedMarker(raw), 0o644);
 		} catch (error) {
+			// Same as the skill loop: a read that threw is not evidence the
+			// command should go away.
+			desiredCommandFiles.add(fileName);
 			console.warn(
 				`[agent-setup] Failed to provision command ${fileName}:`,
 				error,

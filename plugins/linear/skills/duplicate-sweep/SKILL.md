@@ -16,8 +16,9 @@ The same bug gets filed as "export is broken", "CSV download 500s", and "can't g
 out". No shared vocabulary. Run several searches — the error string, the feature name, the
 user-facing verb — and pool the results rather than trusting one query.
 
-Include closed issues. A closed duplicate means the bug came back, which is a regression and
-a more urgent report than a new one.
+Include closed issues. A closed one is not evidence the bug came back — triage closes far more
+issues than fixes do. Treat it as a regression only when the issue records a fix that shipped
+or was reopened; otherwise it is just another report of the same open problem.
 
 ## 2. Same symptom is not the same bug
 
@@ -34,7 +35,15 @@ Not simply the oldest. Prefer the one with the best reproduction, then the most 
 then the earliest. If the oldest is a one-line report and a later one has steps, logs, and
 three participants, the later one survives.
 
-## 4. Move what matters before closing
+## 4. Confirm the groups before you touch anything
+
+Show the user each group you intend to merge: the survivor, the issues folding into it, and
+what you will move across. Merging is destructive in the way that matters — an issue closed
+as a duplicate stops being found by the people watching it, and an incorrect merge is only
+discovered when someone re-reports the bug months later. Get an explicit go-ahead per group,
+or on the set if the user prefers, before the first write.
+
+## 5. Move what matters before closing
 
 Anything only present on the duplicate — reproduction steps, a customer name, a log line, a
 subscriber who wants to know when it is fixed — goes onto the survivor first. Then close the
@@ -43,7 +52,7 @@ lands somewhere useful.
 
 Never delete. A closed issue with a pointer is how the next person's search finds the survivor.
 
-## 5. Report
+## 6. Report
 
 List each group: the survivor, what was merged into it, and what you moved across. Flag the
 pairs you deliberately did not merge and why — those are the judgment calls someone may want
