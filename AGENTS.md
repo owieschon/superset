@@ -90,6 +90,23 @@ Desktop, host-service, and cli share one version; cut releases on a dedicated br
 `scripts/release/README.md`. A *canary* is a separate thing: `bash scripts/release-canary.sh
 [commit]` builds the rolling internal `desktop-canary` prerelease, not a versioned release.
 
+## Plugins
+
+First-party plugins live in `plugins/<name>/`: a `plugin.json` manifest, `skills/`, and optionally
+an MCP server. Everything else in that tree is a build artifact of it. `plugins/<name>/versions/<v>/`
+is the published snapshot a host downloads, and `packages/shared/src/plugins/manifests.generated.ts`
+is the bundle the API resolves against — never hand-edit either. Change the source, then
+`superset plugins publish <name> --bump patch`, which rewrites the snapshot, the marketplace entry in
+`.agent-marketplace.json`, and the generated manifests together. `bun run check:plugins` is what CI
+runs to catch a change that skipped that step; run it before pushing.
+
+Installed plugins are recorded once per machine in
+`$SUPERSET_HOME_DIR/plugins/installed_plugins.json` (`SUPERSET_HOME` is the CLI's install prefix and
+means nothing here). Every provisioner reads that one file — the desktop at boot, `plugins sync`,
+the host-service — because provisioning is declarative and reaps whatever is absent from the desired
+set. A caller that passes its own list instead makes the last writer delete the others' skills.
+Details: `docs/plugins.md`.
+
 ## Orchestrating agents and workspaces
 
 When work wants a fresh isolated environment, a parallel agent, or a long-running job, reach for the
@@ -163,6 +180,8 @@ Three traps worth knowing before you touch catalogs:
 - `.agents/skills/`: CDP UI verification, DB migrations, ticket format, and more. Read the matching
   `SKILL.md` when a task fits its description.
 - `docs/agent-tooling.md`: where commands, skills, and per-agent-CLI config live.
+- `docs/plugins.md`: authoring, publishing, and installing marketplace plugins — the manifest
+  contract, the credential proxy, and which files are generated.
 - `apps/desktop/AGENTS.md`: desktop specifics (notices, persisted renderer state).
 - `apps/mobile/AGENTS.md`: mobile structure and iOS-only scope.
 - `docs/cloud-sandbox-mismatches.md`: where cloud workspace sandboxes don't fit assumptions the

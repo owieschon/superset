@@ -21,6 +21,7 @@
 			// Written by `superset plugins create|publish`; formatting it here just
 			// churns against what the CLI writes back.
 			"!.agent-marketplace.json",
+			"!plugins/*/plugin.json",
 			// Lingui catalogs: .po plus compiled messages.ts (lingui compile output).
 			"!packages/i18n/locales",
 			"!apps/mobile/uniwind-types.d.ts",
@@ -65,6 +66,24 @@
 		}
 	},
 	"overrides": [
+		{
+			// `${config.access_token}` and `${inputs.x}` are the plugin manifest's
+			// own placeholder syntax, resolved server-side by
+			// apps/api/src/lib/plugins/manifest.ts. In these files a template
+			// literal would be the bug.
+			"includes": [
+				"apps/api/src/lib/plugins/**",
+				"apps/marketing/src/app/schemas/**",
+				"apps/web/src/app/schemas/**"
+			],
+			"linter": {
+				"rules": {
+					"suspicious": {
+						"noTemplateCurlyInString": "off"
+					}
+				}
+			}
+		},
 		{
 			"includes": ["packages/cli-framework/**", "packages/cli/**"],
 			"linter": {

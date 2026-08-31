@@ -125,6 +125,13 @@ jobs:
       - name: Audit i18n catalogs
         run: bun run --cwd packages/i18n check
 
+      # `plugins/<name>/versions/<v>/` and the manifests bundled into
+      # @superset/shared are both written by `superset plugins publish`. An edit
+      # to a plugin that skipped publishing leaves the API resolving a stale
+      # manifest — and that manifest names the token_url and the proxy target.
+      - name: Audit plugin marketplace
+        run: bun run check:plugins
+
   test:
     name: Test
     runs-on: ubuntu-latest

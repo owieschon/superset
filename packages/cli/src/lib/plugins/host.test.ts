@@ -1,6 +1,15 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { assertSafeSegment, parsePluginRef } from "./host";
+import { readInstalledPluginSources } from "@superset/agent-setup";
+import {
+	assertSafeSegment,
+	parsePluginRef,
+	pluginsRoot,
+	supersetHome,
+	writeInstalledPlugins,
+} from "./host";
 import { bumpVersion, compareVersions } from "./marketplace";
 
 describe("assertSafeSegment", () => {
@@ -99,5 +108,57 @@ describe("parsePluginRef", () => {
 
 	test("does not treat a leading @ as a separator", () => {
 		expect(parsePluginRef("@scoped")).toEqual({ name: "@scoped" });
+	});
+});
+
+describe("installed_plugins.json location", () => {
+	// Regression: host.ts resolved SUPERSET_HOME first, but that variable is the
+	// CLI's install prefix (apps/marketing/public/cli/install.sh), not the data
+	// home. Writing here while agent-setup read ~/.superset meant `plugins
+	// install` provisioned from an empty desired set — and provisioning reaps.
+	const vars = ["SUPERSET_HOME", "SUPERSET_HOME_DIR"] as const;
+	const saved = new Map(vars.map((name) => [name, process.env[name]]));
+	let root = "";
+
+	beforeEach(() => {
+		root = fs.mkdtempSync(path.join(os.tmpdir(), "superset-cli-plugins-"));
+		process.env.SUPERSET_HOME_DIR = path.join(root, "data");
+		process.env.SUPERSET_HOME = path.join(root, "install-prefix");
+	});
+
+	afterEach(() => {
+		for (const name of vars) {
+			const value = saved.get(name);
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+		fs.rmSync(root, { recursive: true, force: true });
+	});
+
+	test("what the CLI writes is what agent-setup provisions from", () => {
+		writeInstalledPlugins([
+			{
+				marketplace: "superset",
+				name: "linear",
+				version: "1.3.0",
+				installPath: path.join(root, "cache", "linear"),
+				installedAt: "2026-08-31T00:00:00.000Z",
+				enabled: true,
+			},
+		]);
+
+		expect(readInstalledPluginSources()).toEqual([
+			{ name: "linear", dir: path.join(root, "cache", "linear") },
+		]);
+	});
+
+	test("SUPERSET_HOME does not steer the plugins root", () => {
+		expect(supersetHome()).toBe(path.join(root, "data"));
+		expect(pluginsRoot()).toBe(path.join(root, "data", "plugins"));
+	});
+
+	test("an unset SUPERSET_HOME_DIR falls back to ~/.superset, not the prefix", () => {
+		delete process.env.SUPERSET_HOME_DIR;
+		expect(supersetHome()).toBe(path.join(os.homedir(), ".superset"));
 	});
 });

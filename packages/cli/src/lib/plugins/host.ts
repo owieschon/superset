@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { installedPluginsFilePath } from "@superset/agent-setup";
 import { CLIError } from "@superset/cli-framework";
+import { getSupersetHomeDir } from "../settings/paths";
 import { MARKETPLACE_FILE, type Marketplace } from "./marketplace";
 
 export {
@@ -34,17 +36,13 @@ export interface InstalledPlugin {
 }
 
 /**
- * SUPERSET_HOME_DIR is what the desktop rewrites into the environment and what
- * agent-setup resolves against, so honouring only SUPERSET_HOME left the CLI
- * reading a different ~/.superset than the process that provisions from it.
- * SUPERSET_HOME keeps priority so anything setting it explicitly still wins.
+ * SUPERSET_HOME_DIR is the only variable that names this directory. SUPERSET_HOME
+ * is the CLI's *install* prefix (see apps/marketing/public/cli/install.sh), so
+ * reading it here sent anyone who set it to a plugins root that agent-setup —
+ * the process that provisions from these records — never looks at.
  */
 export function supersetHome(): string {
-	return (
-		process.env.SUPERSET_HOME ??
-		process.env.SUPERSET_HOME_DIR ??
-		path.join(os.homedir(), ".superset")
-	);
+	return getSupersetHomeDir();
 }
 
 export function pluginsRoot(): string {
@@ -73,8 +71,13 @@ function knownFile(): string {
 	return path.join(pluginsRoot(), "known_marketplaces.json");
 }
 
+/**
+ * agent-setup owns this path: it reads the same file to decide which plugins to
+ * provision skills from, and provisioning reaps whatever is absent. Two
+ * spellings of it is two desired sets, and whoever ran last wins.
+ */
 function installedFile(): string {
-	return path.join(pluginsRoot(), "installed_plugins.json");
+	return installedPluginsFilePath();
 }
 
 function readJsonFile<T>(file: string, fallback: T): T {

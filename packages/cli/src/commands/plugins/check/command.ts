@@ -4,7 +4,10 @@ import {
 	findMarketplace,
 	resolvePlugins,
 } from "../../../lib/plugins/marketplace";
-import { checkPlugin } from "../../../lib/plugins/publish";
+import {
+	checkPlugin,
+	generatedManifestDrift,
+} from "../../../lib/plugins/publish";
 
 export default command({
 	description:
@@ -24,8 +27,13 @@ export default command({
 		),
 	run: async ({ args }) => {
 		const ctx = findMarketplace();
-		const plugins = resolvePlugins(ctx, args.names as string[] | undefined);
+		const names = args.names as string[] | undefined;
+		const plugins = resolvePlugins(ctx, names);
 		const issues = plugins.flatMap((plugin) => checkPlugin(ctx, plugin));
+
+		// Only when checking the whole marketplace: the bundle is generated from
+		// every published plugin, so a subset can never say whether it is current.
+		if (!names?.length) issues.push(...generatedManifestDrift(ctx));
 
 		if (issues.length) {
 			throw new CLIError(
