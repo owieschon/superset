@@ -64,30 +64,45 @@ export function PluginCard({
 		>
 			<PluginIcon pluginName={plugin.name} />
 			<div className="min-w-0 flex-1">
-				<div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
-					{plugin.interface.displayName}
+				<div className="flex min-w-0 items-center gap-1.5 text-sm font-medium text-foreground">
+					{/* Truncates so the badges and status keep their width; without
+					    it every sibling is shrink-0 and the row overruns the card,
+					    painting over the ··· menu. */}
+					<span className="truncate">{plugin.interface.displayName}</span>
 					<PluginKindBadges plugin={plugin} />
-					{plugin.updateAvailable && (
+					{/* One status, most blocking first: disabled runs nothing,
+					    unconnected cannot answer a tool call, and an outdated
+					    plugin still works. Two of these side by side read as one
+					    run-on string, which is what they did. */}
+					{isDisabled ? (
 						<span className="shrink-0 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
-							<Trans id="dashboard.plugins.card.updateAvailable">
-								Update available
-							</Trans>
+							<Trans id="dashboard.plugins.card.disabled">Disabled</Trans>
 						</span>
-					)}
-					{isConnected && !isDisabled && !plugin.updateAvailable && (
-						<LuCheck className="size-3.5 shrink-0 text-muted-foreground" />
-					)}
-					{isInstalled && !isConnected && !isDisabled && (
+					) : isInstalled && !isConnected ? (
 						<span className="shrink-0 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
 							<Trans id="dashboard.plugins.card.needsConnection">
 								Not connected
 							</Trans>
 						</span>
-					)}
-					{isDisabled && (
-						<span className="shrink-0 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
-							<Trans id="dashboard.plugins.card.disabled">Disabled</Trans>
-						</span>
+					) : isConnected ? (
+						<LuCheck className="size-3.5 shrink-0 text-muted-foreground" />
+					) : null}
+					{plugin.updateAvailable && !isDisabled && (
+						// A button, not a label: the update is the point of saying
+						// so, and the ··· menu keeps the same action for discovery.
+						<Button
+							variant="outline"
+							size="xs"
+							disabled={isBusy}
+							className="h-4 shrink-0 gap-0.5 rounded px-1 text-[9px] font-medium tracking-wide uppercase"
+							onClick={(event) => {
+								event.stopPropagation();
+								onUpdate(plugin.name);
+							}}
+						>
+							<LuArrowUp className="size-2.5" />
+							<Trans id="dashboard.plugins.card.update">Update</Trans>
+						</Button>
 					)}
 				</div>
 				<p className="truncate text-xs text-muted-foreground">

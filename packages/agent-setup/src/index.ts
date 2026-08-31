@@ -89,6 +89,10 @@ export {
 	writeSharedDisabledSkillIds,
 } from "./disabled-skills";
 export {
+	installedPluginsFilePath,
+	readInstalledPluginSources,
+} from "./installed-plugins";
+export {
 	readExternallyConfiguredMcpServers,
 	type SyncManagedMcpServersOptions,
 	syncManagedMcpServers,

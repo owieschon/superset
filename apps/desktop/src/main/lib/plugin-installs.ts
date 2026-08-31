@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 import {
 	createManagedSkills,
 	resolveDisabledSkillIds,
@@ -14,6 +16,8 @@ import {
 	type PluginMcpServerConfig,
 	SUPERSET_MANAGED_SKILLS,
 } from "@superset/shared/plugins";
+import log from "electron-log/main";
+import { resolveBundledCliPath } from "main/lib/bundled-cli";
 import { localDb } from "main/lib/local-db";
 
 /**
@@ -24,6 +28,40 @@ import { localDb } from "main/lib/local-db";
  * installed set, so installs and uninstalls both land on app restart even if
  * a mid-session sync was missed.
  */
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Materializes a plugin's content and skills by running the bundled CLI.
+ *
+ * The CLI already resolves a plugin from its marketplace, caches the published
+ * version, and provisions its skills out to every directory an agent reads —
+ * reaping the ones whose plugin is gone. Reimplementing that here is how the two
+ * paths drifted in the first place: the app wrote MCP config and nothing else,
+ * so a plugin installed from the UI never got its skills at all.
+ *
+ * Failure is reported, not thrown. The install record and MCP config are already
+ * written by then, and a plugin whose servers work but whose skills are missing
+ * is worth surfacing rather than rolling back.
+ */
+async function runPluginCli(args: string[]): Promise<void> {
+	const cli = resolveBundledCliPath();
+	if (!cli) {
+		log.warn("[plugins] no bundled CLI; skills were not provisioned");
+		return;
+	}
+
+	try {
+		await execFileAsync(cli, ["plugins", ...args, "--json"], {
+			timeout: 60_000,
+		});
+	} catch (error) {
+		log.warn(
+			`[plugins] ${args.join(" ")} failed; skills may be stale:`,
+			error instanceof Error ? error.message : error,
+		);
+	}
+}
 
 export function getInstalledPlugins(): InstalledPlugin[] {
 	return localDb.select().from(settings).get()?.installedPlugins ?? [];
@@ -66,19 +104,26 @@ export function installPlugin(name: string): InstalledPlugin[] | null {
 	const plugin = getPluginByName(name);
 	if (!plugin) return null;
 
+	// Re-running over an existing install is an update, not a no-op: it is how
+	// the version moves and how a plugin's new skills arrive. Keeping the
+	// original installedAt keeps "when did I add this" answerable.
 	const installed = getInstalledPlugins();
-	const next = installed.some((entry) => entry.name === name)
-		? installed
-		: [
-				...installed,
-				{
-					name: plugin.name,
-					version: plugin.version,
-					installedAt: new Date().toISOString(),
-				},
-			];
+	const existing = installed.find((entry) => entry.name === name);
+	const record: InstalledPlugin = {
+		name: plugin.name,
+		version: plugin.version,
+		installedAt: existing?.installedAt ?? new Date().toISOString(),
+		...(existing?.enabled === false ? { enabled: false } : {}),
+	};
+	const next = existing
+		? installed.map((entry) => (entry.name === name ? record : entry))
+		: [...installed, record];
+
 	saveInstalledPlugins(next);
 	syncInstalledPluginMcpServers();
+	// --update because the CLI refuses a second install otherwise, which is the
+	// gate that exists so a manifest change is asked for rather than applied.
+	void runPluginCli(["install", name, "--update"]);
 	return next;
 }
 
@@ -86,6 +131,9 @@ export function uninstallPlugin(name: string): InstalledPlugin[] {
 	const next = getInstalledPlugins().filter((entry) => entry.name !== name);
 	saveInstalledPlugins(next);
 	syncInstalledPluginMcpServers();
+	// Reaps the skill folders this plugin provisioned, leaving hand-written
+	// ones alone — the same removal the CLI does.
+	void runPluginCli(["remove", name]);
 	return next;
 }
 

@@ -87,7 +87,7 @@ export const FIRST_PARTY_MANIFESTS = {
 	"linear": {
 		"$schema": "https://superset.sh/schemas/plugin/1.0.0.json",
 		"name": "linear",
-		"version": "1.2.0",
+		"version": "1.3.0",
 		"description": "Plan and build products: create, search, and update Linear issues.",
 		"author": {
 			"name": "Superset",
@@ -193,8 +193,8 @@ export const FIRST_PARTY_MANIFESTS = {
 				"description": "Turn a rough report into a Linear issue someone can pick up — reproduce the claim, check for duplicates, and fill in team, priority, and labels. Use when the user says to file, open, or create an issue, hands over a bug report or error, or asks to get something into Linear."
 			},
 			{
-				"name": "cycle-review",
-				"description": "Review a Linear cycle — what shipped, what slipped, and what should carry over. Use when a cycle or sprint is ending, someone asks what got done this cycle, why work slipped, what to pull into the next one, or wants a summary to share with the team."
+				"name": "duplicate-sweep",
+				"description": "Find and merge duplicate Linear issues — group reports of the same underlying bug, pick the survivor, and move the evidence across. Use when the backlog has grown noisy, someone asks whether an issue is already reported, or you are cleaning up before planning."
 			},
 			{
 				"name": "project-status",

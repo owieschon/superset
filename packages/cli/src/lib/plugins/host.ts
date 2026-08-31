@@ -33,8 +33,18 @@ export interface InstalledPlugin {
 	enabled: boolean;
 }
 
+/**
+ * SUPERSET_HOME_DIR is what the desktop rewrites into the environment and what
+ * agent-setup resolves against, so honouring only SUPERSET_HOME left the CLI
+ * reading a different ~/.superset than the process that provisions from it.
+ * SUPERSET_HOME keeps priority so anything setting it explicitly still wins.
+ */
 export function supersetHome(): string {
-	return process.env.SUPERSET_HOME ?? path.join(os.homedir(), ".superset");
+	return (
+		process.env.SUPERSET_HOME ??
+		process.env.SUPERSET_HOME_DIR ??
+		path.join(os.homedir(), ".superset")
+	);
 }
 
 export function pluginsRoot(): string {

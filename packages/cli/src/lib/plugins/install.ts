@@ -409,15 +409,15 @@ export async function syncPlugins(): Promise<SyncResult> {
 	const installed = readInstalledPlugins().filter((p) => p.enabled);
 	const before = new Set(skillDirNames());
 
+	// No pluginSources: createManagedSkills reads installed_plugins.json, which
+	// this call just wrote. Passing our own list would let this process and the
+	// desktop disagree about the desired set, and whoever ran last would reap
+	// the other's skills.
 	await createManagedSkills({
 		// Read from the machine-shared mirror, not left empty: provisioning is
 		// declarative, so a run that does not know what the user disabled in the
 		// desktop would put every one of those skills straight back.
 		disabledSkills: resolveDisabledSkillIds(),
-		pluginSources: installed.map((plugin) => ({
-			name: plugin.name,
-			dir: plugin.installPath,
-		})),
 	});
 
 	const after = new Set(skillDirNames());
