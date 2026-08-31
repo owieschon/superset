@@ -1,5 +1,4 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { PluginCatalogEntry } from "@superset/shared/plugins";
 import { Button } from "@superset/ui/button";
 import {
 	DropdownMenu,
@@ -10,18 +9,19 @@ import {
 import { LuCheck, LuEllipsis, LuPause, LuPlay, LuTrash2 } from "react-icons/lu";
 import { PluginIcon } from "renderer/routes/_authenticated/_dashboard/plugins/components/PluginIcon";
 import { PluginKindBadges } from "renderer/routes/_authenticated/_dashboard/plugins/components/PluginKindBadges";
+import type { CatalogPlugin } from "renderer/routes/_authenticated/_dashboard/plugins/hooks/usePluginCatalog";
 
 interface PluginCardProps {
-	plugin: PluginCatalogEntry;
-	/** Installed record OR satisfied by the user's own config — one state. */
+	plugin: CatalogPlugin;
+	/** Installed on the account, which is the only place it is read from. */
 	isInstalled: boolean;
 	/** Installed AND usable: a plugin needing auth is not done until connected. */
 	isConnected: boolean;
 	/** Installed but disabled: record kept, nothing materialized. */
 	isDisabled: boolean;
 	isBusy: boolean;
-	onOpen: (plugin: PluginCatalogEntry) => void;
-	onUninstall: (plugin: PluginCatalogEntry) => void;
+	onOpen: (plugin: CatalogPlugin) => void;
+	onUninstall: (plugin: CatalogPlugin) => void;
 	onSetEnabled: (name: string, enabled: boolean) => void;
 }
 

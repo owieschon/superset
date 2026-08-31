@@ -50,7 +50,8 @@ export function PluginConnections({
 	/** Empty or absent for a skills-only plugin, which has nothing to authenticate. */
 	auth?: readonly PluginAuthSpec[];
 	installed: boolean;
-	onAdd: (inputs?: Record<string, string>, method?: string) => void;
+	/** Installs here and on the account; resolves once the account row exists. */
+	onAdd: () => Promise<void>;
 	onRemove: () => void;
 	isBusy: boolean;
 }) {
@@ -88,11 +89,16 @@ export function PluginConnections({
 	// ${inputs.site} into its authorize URL for per-tenant providers, so
 	// redirecting first would send an unresolved URL.
 	// Connecting is what marks a plugin added, so an unadded plugin installs on
-	// the way through rather than needing a separate Add step first.
-	const authenticate = () => {
+	// the way through rather than needing a separate Add step first — awaited,
+	// because connect resolves the manifest from the install row.
+	const authenticate = async () => {
 		if (!installed) {
-			onAdd(values, method);
-			return;
+			try {
+				await onAdd();
+			} catch {
+				// The install mutation already surfaced why.
+				return;
+			}
 		}
 		if (method === "api_key") connectApiKey({ inputs: values, method });
 		else connectOAuth(values, method);
@@ -166,7 +172,7 @@ export function PluginConnections({
 								size="sm"
 								className="shrink-0"
 								disabled={isBusy}
-								onClick={() => onAdd()}
+								onClick={() => void onAdd()}
 							>
 								<LuPlus className="size-4" />
 								<Trans id="dashboard.plugins.detail.addPlugin">
@@ -250,7 +256,7 @@ export function PluginConnections({
 						<Button
 							className="w-full"
 							disabled={missingRequired || isConnecting}
-							onClick={authenticate}
+							onClick={() => void authenticate()}
 						>
 							{method === "api_key" ? (
 								<LuKeyRound className="size-4" />
@@ -268,22 +274,6 @@ export function PluginConnections({
 							{errorMessage(connectError)}
 						</p>
 					)}
-				</div>
-			)}
-
-			{connected && (
-				<div className="pt-1">
-					<Button
-						variant="ghost"
-						size="sm"
-						className="-ml-2 text-muted-foreground"
-						onClick={authenticate}
-					>
-						<LuPlus className="size-4" />
-						<Trans id="dashboard.plugins.detail.connectAnother">
-							Connect another account
-						</Trans>
-					</Button>
 				</div>
 			)}
 		</section>

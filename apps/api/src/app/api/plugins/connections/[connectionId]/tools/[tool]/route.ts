@@ -1,7 +1,8 @@
 import { auth } from "@superset/auth/server";
 import {
+	bundledSource,
 	getConnection,
-	installedManifest,
+	installedPlugin,
 	templateScope,
 } from "@/lib/plugins/connections";
 import { callTool, PluginDispatchError } from "@/lib/plugins/dispatch";
@@ -22,11 +23,8 @@ export async function POST(
 		return Response.json({ error: "Connection not found" }, { status: 404 });
 	}
 
-	const manifest = await installedManifest(
-		session.user.id,
-		connection.pluginName,
-	);
-	if (!manifest) {
+	const install = await installedPlugin(session.user.id, connection.pluginName);
+	if (!install) {
 		return Response.json(
 			{ error: `Plugin "${connection.pluginName}" is not installed` },
 			{ status: 404 },
@@ -34,6 +32,8 @@ export async function POST(
 	}
 
 	let args: Record<string, unknown> = {};
+	const source = await bundledSource(session.user.id, install.marketplace);
+
 	try {
 		const body = await request.text();
 		if (body.trim()) args = JSON.parse(body) as Record<string, unknown>;
@@ -43,11 +43,12 @@ export async function POST(
 
 	try {
 		const result = await callTool(
-			manifest,
+			install.manifest,
 			await templateScope(connection),
 			tool,
 			args,
 			connection.authMethod,
+			source,
 		);
 		return Response.json({ result });
 	} catch (error) {

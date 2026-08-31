@@ -69,8 +69,8 @@
 						{
 							"name": "api_key",
 							"label": "Linear API key",
-							"placeholder": "lin_api_\u2026",
-							"description": "Linear \u2192 Settings \u2192 Security & access \u2192 Personal API keys",
+							"placeholder": "lin_api_…",
+							"description": "Linear → Settings → Security & access → Personal API keys",
 							"required": true,
 							"secret": true
 						}
@@ -90,11 +90,15 @@
 					},
 					"bind": {
 						"headers": {
-							"Authorization": "${config.access_token}"
+							"Authorization": "Bearer ${config.access_token}"
 						}
 					}
 				}
-			]
+			],
+			"mcp": {
+				"type": "streamable-http",
+				"url": "https://mcp.linear.app/mcp"
+			}
 		}
 	}
 }

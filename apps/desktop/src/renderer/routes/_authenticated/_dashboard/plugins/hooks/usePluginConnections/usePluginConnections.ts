@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { env } from "renderer/env.renderer";
 import { getAuthToken, useAuthToken } from "renderer/lib/auth-client";
+import { PLUGIN_CATALOG_KEY } from "renderer/routes/_authenticated/_dashboard/plugins/hooks/usePluginCatalog";
 
 export interface PluginConnection {
 	id: string;
@@ -44,6 +45,18 @@ export async function registerPluginInstall(
 	);
 }
 
+/** Enables or disables the account-side install, which the catalog reports. */
+export async function registerPluginEnabled(
+	pluginName: string,
+	enabled: boolean,
+): Promise<void> {
+	await request(`/api/plugins/${pluginName}/install`, {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ enabled }),
+	});
+}
+
 /** Removes the install and disconnects anything authorized for the plugin. */
 export async function registerPluginUninstall(
 	pluginName: string,
@@ -51,10 +64,55 @@ export async function registerPluginUninstall(
 	await request(`/api/plugins/${pluginName}/install`, { method: "DELETE" });
 }
 
+export interface PluginConnectResult {
+	connectionId: string;
+	account: string | null;
+}
+
+/**
+ * api_key credentials POST with a JSON body: a secret in a query string lands
+ * in browser history and proxy logs.
+ */
+export async function connectPluginApiKey(
+	pluginName: string,
+	inputs: Record<string, string>,
+	method: string,
+): Promise<PluginConnectResult> {
+	return await request<PluginConnectResult>(
+		`/api/plugins/${pluginName}/connect?method=${encodeURIComponent(method)}`,
+		{
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(inputs),
+		},
+	);
+}
+
+/** OAuth needs a real browser navigation, and carries no secret. */
+export function openPluginOAuth(
+	apiUrl: string,
+	pluginName: string,
+	inputs: Record<string, string>,
+	method: string,
+): void {
+	const url = new URL(`${apiUrl}/api/plugins/${pluginName}/connect`);
+	for (const [key, value] of Object.entries(inputs)) {
+		url.searchParams.set(key, value);
+	}
+	url.searchParams.set("method", method);
+	window.open(url.toString(), "_blank", "noopener,noreferrer");
+}
+
 export function usePluginConnections(pluginName: string) {
 	const token = useAuthToken();
 	const queryClient = useQueryClient();
 	const queryKey = ["plugin-connections", pluginName];
+	// The catalog carries each plugin's connected accounts, so the cards on the
+	// list page go stale on the same events this list does.
+	const refresh = () => {
+		void queryClient.invalidateQueries({ queryKey });
+		void queryClient.invalidateQueries({ queryKey: PLUGIN_CATALOG_KEY });
+	};
 
 	const connections = useQuery({
 		queryKey,
@@ -89,14 +147,9 @@ export function usePluginConnections(pluginName: string) {
 			if (context?.previous)
 				queryClient.setQueryData(queryKey, context.previous);
 		},
-		onSettled: () => queryClient.invalidateQueries({ queryKey }),
+		onSettled: refresh,
 	});
 
-	/**
-	 * api_key credentials POST with a JSON body: a secret in a query string
-	 * lands in browser history and proxy logs. OAuth still needs a real browser
-	 * navigation, and carries no secret, so it opens the redirect route.
-	 */
 	const connectApiKey = useMutation({
 		mutationFn: async ({
 			inputs,
@@ -104,31 +157,14 @@ export function usePluginConnections(pluginName: string) {
 		}: {
 			inputs: Record<string, string>;
 			method: string;
-		}) =>
-			await request<{ connectionId: string; account: string | null }>(
-				`/api/plugins/${pluginName}/connect?method=${encodeURIComponent(method)}`,
-				{
-					method: "POST",
-					headers: { "content-type": "application/json" },
-					body: JSON.stringify(inputs),
-				},
-			),
-		onSuccess: () => queryClient.invalidateQueries({ queryKey }),
+		}) => await connectPluginApiKey(pluginName, inputs, method),
+		onSuccess: refresh,
 	});
 
 	const connectOAuth = (
 		inputs: Record<string, string> = {},
 		method = "oauth2",
-	) => {
-		const url = new URL(
-			`${env.NEXT_PUBLIC_API_URL}/api/plugins/${pluginName}/connect`,
-		);
-		for (const [key, value] of Object.entries(inputs)) {
-			url.searchParams.set(key, value);
-		}
-		url.searchParams.set("method", method);
-		window.open(url.toString(), "_blank", "noopener,noreferrer");
-	};
+	) => openPluginOAuth(env.NEXT_PUBLIC_API_URL, pluginName, inputs, method);
 
 	return {
 		connections: connections.data ?? [],

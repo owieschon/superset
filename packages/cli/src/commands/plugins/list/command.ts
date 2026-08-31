@@ -7,9 +7,10 @@ interface CatalogPlugin {
 	version: string;
 	description: string;
 	marketplace: string;
-	authType: "oauth2" | "api_key" | null;
+	authMethods: { type: "oauth2" | "api_key" }[];
 	installed: boolean;
 	enabled: boolean;
+	connections: { id: string; account: string | null }[];
 	accounts: string[];
 }
 
@@ -22,9 +23,9 @@ export default command({
 	display: (data) =>
 		table(
 			(data ?? []) as Record<string, unknown>[],
-			["name", "version", "marketplace", "status"],
-			["PLUGIN", "VERSION", "MARKETPLACE", "STATUS"],
-			[20, 10, 18, 26],
+			["name", "version", "status", "pluginId"],
+			["PLUGIN", "VERSION", "STATUS", "PLUGIN ID"],
+			[16, 9, 30, 38],
 		),
 	run: async ({ ctx, options }) => {
 		// The account is the source of truth, so a plugin installed on another
@@ -41,7 +42,7 @@ export default command({
 		const status = (plugin: CatalogPlugin) => {
 			if (!plugin.installed) return "available";
 			if (!plugin.enabled) return "disabled";
-			if (plugin.authType && plugin.accounts.length === 0) {
+			if (plugin.authMethods.length > 0 && plugin.connections.length === 0) {
 				return "needs connection";
 			}
 			return plugin.accounts.length
@@ -55,6 +56,10 @@ export default command({
 				version: plugin.version,
 				marketplace: plugin.marketplace,
 				status: status(plugin),
+				// What `mcp tools` and `mcp call-tool` address a plugin by. One
+				// per connected account, so a plugin with two accounts lists two.
+				pluginId: plugin.connections.map((connection) => connection.id),
+				connections: plugin.connections,
 				description: plugin.description,
 			})),
 			message: visible.length

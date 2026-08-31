@@ -1,3 +1,9 @@
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import type { BundledSource } from "./connections";
 import {
 	type PluginManifest,
 	resolveTemplate,
@@ -118,27 +124,198 @@ function remoteTarget(
 	return { url: resolveTemplate(mcp.url, scope), headers };
 }
 
+type BundledRun = (event: {
+	event: "get-tools" | "call-tool";
+	eventBody: Record<string, unknown>;
+	config: Record<string, unknown>;
+}) => Promise<unknown> | unknown;
+
+interface ServerRef {
+	/** Repo-root relative, stamped by `plugins publish` and version-pinned. */
+	path: string;
+	/** `sha256-<base64>` of the published artifact. */
+	integrity: string;
+}
+
+// Keyed by integrity, so a republished server is a different entry rather than
+// a stale module the ESM loader would keep serving, and two plugins that ship
+// byte-identical servers share one load.
+const loaded = new Map<string, Promise<BundledRun>>();
+
+// The specifier is a path that only exists at runtime, so it has to stay opaque
+// to the build: a bare `import(file)` is rewritten by the bundler into a lookup
+// in its own module map, which then fails to resolve a temp file it never saw.
+const importAtRuntime = new Function(
+	"specifier",
+	"return import(specifier)",
+) as (specifier: string) => Promise<{ run?: BundledRun }>;
+
+// A plugin server is a bundle, not an application; anything this size is a
+// mistake or an attack, and /tmp is small on the runtimes this deploys to.
+const MAX_SERVER_BYTES = 8 * 1024 * 1024;
+
+function serverRef(manifest: PluginManifest): ServerRef | null {
+	const server = supersetExtension(manifest)?.server;
+	if (!server?.path || !server.integrity) return null;
+	return { path: server.path, integrity: server.integrity };
+}
+
+function digestOf(source: Buffer): string {
+	return `sha256-${createHash("sha256").update(source).digest("base64")}`;
+}
+
 /**
- * Bundled servers are JS modules the host imports and calls run() on. They are
- * not yet reachable from this deployment: the module has to be fetched to a
- * writable filesystem and dynamically imported, which a serverless runtime
- * cannot do. Remote plugins work today; this fails loudly rather than
- * pretending.
+ * Downloads the exact artifact the installed version published.
+ *
+ * The digest comes from the manifest the account already trusts, so the
+ * download is only a byte source: a force-pushed branch, a swapped CDN
+ * response, or a truncated body all fail the comparison instead of reaching
+ * `import()`. That check is what makes fetching remote code at request time
+ * defensible at all — this runs in the API's own process, with its database
+ * handle and every provider secret in scope.
  */
-function bundledUnsupported(pluginName: string): never {
-	throw new PluginDispatchError(
-		`Plugin "${pluginName}" ships a bundled server, which this deployment cannot run yet. Remote (streamable-http) plugins are supported.`,
-		501,
-	);
+async function fetchServer(
+	pluginName: string,
+	source: BundledSource,
+	ref: ServerRef,
+): Promise<Buffer> {
+	const url = `https://raw.githubusercontent.com/${source.repo}/${source.ref}/${ref.path}`;
+	const response = await fetch(url);
+	if (!response.ok) {
+		throw new PluginDispatchError(
+			`Could not download the server for "${pluginName}" (${response.status} from ${url}).`,
+			502,
+		);
+	}
+
+	const body = Buffer.from(await response.arrayBuffer());
+	if (body.byteLength > MAX_SERVER_BYTES) {
+		throw new PluginDispatchError(
+			`Server for "${pluginName}" is ${body.byteLength} bytes, over the ${MAX_SERVER_BYTES} limit.`,
+			502,
+		);
+	}
+
+	const actual = digestOf(body);
+	if (actual !== ref.integrity) {
+		throw new PluginDispatchError(
+			`Server for "${pluginName}" does not match the published digest; refusing to run it.`,
+			502,
+		);
+	}
+	return body;
+}
+
+/**
+ * Resolves the plugin's server to a module, downloading it once per version.
+ *
+ * `import()` needs a real path and the deployed bundle is read-only, so the
+ * verified bytes are written to the temp dir. A file already there was written
+ * by this deployment under its own digest, so it is reused without a round
+ * trip; a runtime that recycles that directory just downloads again on the next
+ * cold start. That is the whole cache: first call per version pays the fetch,
+ * every later one is a map hit.
+ */
+async function bundledRun(
+	pluginName: string,
+	manifest: PluginManifest,
+	source: BundledSource | null,
+): Promise<BundledRun> {
+	const ref = serverRef(manifest);
+	if (!ref) {
+		throw new PluginDispatchError(
+			`Plugin "${pluginName}" declares no mcp url and no published server.`,
+			501,
+		);
+	}
+	if (!source) {
+		throw new PluginDispatchError(
+			`Plugin "${pluginName}" came from a marketplace this server cannot reach, so its bundled server cannot be downloaded.`,
+			501,
+		);
+	}
+
+	const cached = loaded.get(ref.integrity);
+	if (cached) return await cached;
+
+	const load = (async () => {
+		// Base64url of the digest: it is the cache key, and it cannot contain a
+		// path separator the way the raw base64 can.
+		const key = Buffer.from(ref.integrity).toString("base64url");
+		const dir = path.join(os.tmpdir(), "superset-plugin-servers");
+		const file = path.join(dir, `${key}.mjs`);
+
+		if (!fs.existsSync(file)) {
+			const body = await fetchServer(pluginName, source, ref);
+			await fs.promises.mkdir(dir, { recursive: true });
+			// Written then renamed: two concurrent requests on a cold start would
+			// otherwise let one import a half-written module.
+			const staging = `${file}.${process.pid}.partial`;
+			await fs.promises.writeFile(staging, body);
+			await fs.promises.rename(staging, file);
+		}
+
+		const module = await importAtRuntime(pathToFileURL(file).href);
+		if (typeof module.run !== "function") {
+			throw new PluginDispatchError(
+				`Plugin "${pluginName}" server exports no run().`,
+				500,
+			);
+		}
+		return module.run;
+	})();
+
+	loaded.set(ref.integrity, load);
+	try {
+		return await load;
+	} catch (error) {
+		// A failed load must not be cached, or every later request inherits it.
+		loaded.delete(ref.integrity);
+		throw error;
+	}
+}
+
+/** The plugin's own config shape: inputs alongside the resolved credential. */
+function bundledConfig(scope: TemplateScope): Record<string, unknown> {
+	return { ...(scope.inputs ?? {}), ...(scope.config ?? {}) };
+}
+
+async function bundledDispatch(
+	manifest: PluginManifest,
+	scope: TemplateScope,
+	source: BundledSource | null,
+	event: "get-tools" | "call-tool",
+	eventBody: Record<string, unknown>,
+): Promise<unknown> {
+	const pluginName = manifest.name;
+	const run = await bundledRun(pluginName, manifest, source);
+	try {
+		return await run({ event, eventBody, config: bundledConfig(scope) });
+	} catch (error) {
+		throw new PluginDispatchError(
+			`Bundled server for "${pluginName}" failed: ${error instanceof Error ? error.message : String(error)}`,
+			502,
+		);
+	}
 }
 
 export async function listTools(
 	manifest: PluginManifest,
 	scope: TemplateScope,
 	method?: string | null,
+	source?: BundledSource | null,
 ): Promise<ToolDefinition[]> {
 	const target = remoteTarget(manifest, scope, method);
-	if (!target) bundledUnsupported(manifest.name);
+	if (!target) {
+		const tools = await bundledDispatch(
+			manifest,
+			scope,
+			source ?? null,
+			"get-tools",
+			{},
+		);
+		return Array.isArray(tools) ? (tools as ToolDefinition[]) : [];
+	}
 
 	const result = (await rpc(target.url, target.headers, "tools/list", {})) as {
 		tools?: ToolDefinition[];
@@ -152,9 +329,15 @@ export async function callTool(
 	tool: string,
 	args: Record<string, unknown>,
 	method?: string | null,
+	source?: BundledSource | null,
 ): Promise<unknown> {
 	const target = remoteTarget(manifest, scope, method);
-	if (!target) bundledUnsupported(manifest.name);
+	if (!target) {
+		return await bundledDispatch(manifest, scope, source ?? null, "call-tool", {
+			name: tool,
+			arguments: args,
+		});
+	}
 
 	return await rpc(target.url, target.headers, "tools/call", {
 		name: tool,

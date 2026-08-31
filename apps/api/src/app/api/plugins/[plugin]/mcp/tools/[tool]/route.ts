@@ -36,6 +36,7 @@ export async function POST(
 			tool,
 			args,
 			resolved.context.authMethod,
+			resolved.context.bundled,
 		);
 		return Response.json({ result });
 	} catch (error) {

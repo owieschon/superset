@@ -79,7 +79,7 @@ export function PluginDetail({ plugin }: { plugin: CatalogPlugin }) {
 				displayName={plugin.interface.displayName}
 				auth={plugin.auth}
 				installed={plugin.installed}
-				onAdd={(inputs, method) => add(plugin.name, method, inputs)}
+				onAdd={() => add(plugin.name)}
 				onRemove={() => uninstall(plugin.name)}
 				isBusy={isBusy}
 			/>

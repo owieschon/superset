@@ -1,5 +1,11 @@
-export type { PluginConnection } from "./usePluginConnections";
+export type {
+	PluginConnection,
+	PluginConnectResult,
+} from "./usePluginConnections";
 export {
+	connectPluginApiKey,
+	openPluginOAuth,
+	registerPluginEnabled,
 	registerPluginInstall,
 	registerPluginUninstall,
 	usePluginConnections,

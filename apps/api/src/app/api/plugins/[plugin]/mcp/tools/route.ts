@@ -31,6 +31,7 @@ export async function GET(
 			resolved.context.manifest,
 			resolved.context.scope,
 			resolved.context.authMethod,
+			resolved.context.bundled,
 		);
 		return Response.json({ plugin, tools });
 	} catch (error) {

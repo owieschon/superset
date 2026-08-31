@@ -2,8 +2,14 @@ import { db } from "@superset/db/client";
 import {
 	pluginConnections,
 	pluginInstalls,
+	pluginMarketplaces,
 	type SelectPluginConnection,
 } from "@superset/db/schema";
+import {
+	DEFAULT_MARKETPLACE,
+	DEFAULT_MARKETPLACE_REF,
+	DEFAULT_MARKETPLACE_REPO,
+} from "@superset/shared/plugins";
 import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import {
 	decryptOptional,
@@ -200,11 +206,16 @@ export async function templateScope(
  * filtering on user+plugin alone can match two rows; order by marketplace and
  * take the first rather than letting the database choose.
  */
-export async function installedManifest(
+export interface InstalledPlugin {
+	manifest: PluginManifest;
+	marketplace: string;
+}
+
+export async function installedPlugin(
 	userId: string,
 	pluginName: string,
 	marketplace?: string,
-): Promise<PluginManifest | null> {
+): Promise<InstalledPlugin | null> {
 	const rows = await db
 		.select({
 			manifest: pluginInstalls.manifest,
@@ -221,7 +232,63 @@ export async function installedManifest(
 		)
 		.orderBy(asc(pluginInstalls.marketplace))
 		.limit(1);
-	return (rows[0]?.manifest as PluginManifest | undefined) ?? null;
+
+	const row = rows[0];
+	if (!row) return null;
+	return {
+		manifest: row.manifest as PluginManifest,
+		marketplace: row.marketplace,
+	};
+}
+
+export async function installedManifest(
+	userId: string,
+	pluginName: string,
+	marketplace?: string,
+): Promise<PluginManifest | null> {
+	return (
+		(await installedPlugin(userId, pluginName, marketplace))?.manifest ?? null
+	);
+}
+
+export interface BundledSource {
+	repo: string;
+	ref: string;
+}
+
+/**
+ * Where to download a plugin's bundled server from.
+ *
+ * The marketplace the plugin was installed from decides this, so an install
+ * always resolves against the repo it came from. A `path` marketplace is one
+ * machine's working tree and is unreachable from here, so it yields null and
+ * the caller reports that rather than silently falling back to a repo the user
+ * never chose.
+ */
+export async function bundledSource(
+	userId: string,
+	marketplace: string,
+): Promise<BundledSource | null> {
+	const [row] = await db
+		.select()
+		.from(pluginMarketplaces)
+		.where(
+			and(
+				eq(pluginMarketplaces.userId, userId),
+				eq(pluginMarketplaces.name, marketplace),
+			),
+		)
+		.limit(1);
+
+	if (!row) {
+		// The first-party marketplace ships with the app, so an account that
+		// never explicitly added one still resolves.
+		return marketplace === DEFAULT_MARKETPLACE
+			? { repo: DEFAULT_MARKETPLACE_REPO, ref: DEFAULT_MARKETPLACE_REF }
+			: null;
+	}
+	if (row.sourceKind !== "github" || !row.repo) return null;
+	return { repo: row.repo, ref: row.ref ?? "HEAD" };
 }
 
 export function manifestAuth(manifest: PluginManifest) {
@@ -230,6 +297,8 @@ export function manifestAuth(manifest: PluginManifest) {
 
 export interface PluginContext {
 	manifest: PluginManifest;
+	/** Where a bundled server is downloaded from; null for a local marketplace. */
+	bundled: BundledSource | null;
 	scope: TemplateScope;
 	connectionId: string | null;
 	/** Which declared method the held token came from; null when no auth. */
@@ -251,19 +320,27 @@ export async function pluginContext(
 	| { ok: true; context: PluginContext }
 	| { ok: false; status: number; error: string }
 > {
-	const manifest = await installedManifest(userId, pluginName);
-	if (!manifest) {
+	const install = await installedPlugin(userId, pluginName);
+	if (!install) {
 		return {
 			ok: false,
 			status: 404,
 			error: `Plugin "${pluginName}" is not installed`,
 		};
 	}
+	const { manifest } = install;
+	const bundled = await bundledSource(userId, install.marketplace);
 
 	if (!manifestAuth(manifest)) {
 		return {
 			ok: true,
-			context: { manifest, scope: {}, connectionId: null, authMethod: null },
+			context: {
+				manifest,
+				bundled,
+				scope: {},
+				connectionId: null,
+				authMethod: null,
+			},
 		};
 	}
 
@@ -295,6 +372,7 @@ export async function pluginContext(
 		ok: true,
 		context: {
 			manifest,
+			bundled,
 			scope: await templateScope(connection),
 			connectionId: connection.id,
 			authMethod: connection.authMethod,

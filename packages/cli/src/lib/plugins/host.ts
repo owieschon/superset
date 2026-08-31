@@ -4,11 +4,11 @@ import path from "node:path";
 import { CLIError } from "@superset/cli-framework";
 import { MARKETPLACE_FILE, type Marketplace } from "./marketplace";
 
-export const DEFAULT_MARKETPLACE = "superset";
-// Temporary: the marketplace lives on a branch of the fork until it merges to
-// superset-sh/superset, whose default branch has no .agent-marketplace.json.
-export const DEFAULT_MARKETPLACE_REPO = "harshithmullapudi/superset";
-export const DEFAULT_MARKETPLACE_REF = "feat/plugins";
+export {
+	DEFAULT_MARKETPLACE,
+	DEFAULT_MARKETPLACE_REF,
+	DEFAULT_MARKETPLACE_REPO,
+} from "@superset/shared/plugins";
 
 export interface MarketplaceSource {
 	kind: "github" | "path";
@@ -41,8 +41,14 @@ export function pluginsRoot(): string {
 	return path.join(supersetHome(), "plugins");
 }
 
+/**
+ * Where provisioned skills land. This is `~/.agents/skills`, not a Superset
+ * directory: it is the path Codex, Vibe, and Kimi discover natively, and the
+ * one agent-setup provisions into. A Superset-private directory would be read
+ * by nothing.
+ */
 export function skillsRoot(): string {
-	return path.join(supersetHome(), "skills");
+	return path.join(os.homedir(), ".agents", "skills");
 }
 
 export function marketplacesDir(): string {

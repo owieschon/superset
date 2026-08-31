@@ -74,6 +74,52 @@ export async function POST(
 	});
 }
 
+/**
+ * Enable or disable an install. The record stays; `enabled` is what the
+ * catalog reports and what each machine reconciles its local materialization
+ * against, so the account stays the source of truth for both.
+ */
+export async function PATCH(
+	request: Request,
+	{ params }: { params: Promise<{ plugin: string }> },
+) {
+	const session = await auth.api.getSession({ headers: request.headers });
+	if (!session?.user) {
+		return Response.json({ error: "Unauthorized" }, { status: 401 });
+	}
+
+	const { plugin } = await params;
+	const body = (await request.json().catch(() => ({}))) as {
+		enabled?: unknown;
+	};
+	if (typeof body.enabled !== "boolean") {
+		return Response.json(
+			{ error: "`enabled` must be a boolean" },
+			{ status: 400 },
+		);
+	}
+
+	const [row] = await db
+		.update(pluginInstalls)
+		.set({ enabled: body.enabled })
+		.where(
+			and(
+				eq(pluginInstalls.userId, session.user.id),
+				eq(pluginInstalls.pluginName, plugin),
+			),
+		)
+		.returning();
+
+	if (!row) {
+		return Response.json(
+			{ error: `"${plugin}" is not installed` },
+			{ status: 404 },
+		);
+	}
+
+	return Response.json({ plugin, enabled: row.enabled });
+}
+
 /** Uninstall, and disconnect anything authorized for the plugin. */
 export async function DELETE(
 	request: Request,

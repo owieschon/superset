@@ -63,6 +63,12 @@ interface CatalogResponse {
 }
 
 /**
+ * Install state lives on the account and nowhere else, so every mutation that
+ * changes it has exactly one key to invalidate.
+ */
+export const PLUGIN_CATALOG_KEY = ["plugin-catalog"] as const;
+
+/**
  * The catalog comes from the account, not from disk: a plugin installed on
  * another machine shows as installed here, and the built-in marketplace is
  * compiled into the API response so the page is populated before anything has
@@ -75,7 +81,7 @@ export function usePluginCatalog() {
 	const token = useAuthToken();
 
 	const query = useQuery({
-		queryKey: ["plugin-catalog"],
+		queryKey: PLUGIN_CATALOG_KEY,
 		enabled: Boolean(token),
 		queryFn: async (): Promise<CatalogPlugin[]> => {
 			const response = await fetch(`${env.NEXT_PUBLIC_API_URL}/api/plugins`, {

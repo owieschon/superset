@@ -1,9 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import {
-	isPluginExternallyConfigured,
-	PLUGIN_CATEGORIES,
-	type PluginCatalogEntry,
-} from "@superset/shared/plugins";
+import { PLUGIN_CATEGORIES } from "@superset/shared/plugins";
 import { Button } from "@superset/ui/button";
 import { Input } from "@superset/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@superset/ui/tabs";
@@ -12,7 +8,6 @@ import { cn } from "@superset/ui/utils";
 import { useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { LuSearch, LuSettings2 } from "react-icons/lu";
-import { electronTrpc } from "renderer/lib/electron-trpc";
 import { PluginIcon } from "renderer/routes/_authenticated/_dashboard/plugins/components/PluginIcon";
 import {
 	type CatalogPlugin,
@@ -29,51 +24,20 @@ export function PluginsView() {
 	const [isManageOpen, setIsManageOpen] = useState(false);
 	const navigate = useNavigate();
 
-	const { data: installed } = electronTrpc.plugins.listInstalled.useQuery();
-	const installedNames = useMemo(
-		() => new Set((installed ?? []).map((entry) => entry.name)),
-		[installed],
-	);
-	const disabledNames = useMemo(
-		() =>
-			new Set(
-				(installed ?? [])
-					.filter((entry) => entry.enabled === false)
-					.map((entry) => entry.name),
-			),
-		[installed],
-	);
-	const { data: externalServers } =
-		electronTrpc.plugins.listExternalServers.useQuery();
 	const {
 		plugins: catalog,
 		isLoading: isCatalogLoading,
 		error: catalogError,
 	} = usePluginCatalog();
 
-	// One state: an install record OR the user's own config both count as
-	// installed (having it = installed).
-	const isInstalled = (plugin: PluginCatalogEntry) =>
-		installedNames.has(plugin.name) ||
-		isPluginExternallyConfigured(plugin, externalServers ?? []);
-
 	// Installed is not the same as usable: a plugin that needs auth is only
 	// done once an account is connected, so the card should not claim otherwise.
-	const connectedNames = useMemo(
-		() =>
-			new Set(
-				catalog
-					.filter((entry) => !entry.auth || entry.accounts.length > 0)
-					.map((entry) => entry.name),
-			),
-		[catalog],
-	);
 	const isConnected = (plugin: CatalogPlugin) =>
-		isInstalled(plugin) && connectedNames.has(plugin.name);
+		plugin.installed && (!plugin.auth || plugin.accounts.length > 0);
 
 	const { uninstall, setEnabled, isBusy } = usePluginMutations();
 
-	const handleOpen = (plugin: PluginCatalogEntry) => {
+	const handleOpen = (plugin: CatalogPlugin) => {
 		navigate({
 			to: "/plugins/$pluginName",
 			params: { pluginName: plugin.name },
@@ -97,7 +61,7 @@ export function PluginsView() {
 		);
 	}, [query, catalog]);
 
-	const installedPlugins = visiblePlugins.filter(isInstalled);
+	const installedPlugins = visiblePlugins.filter((plugin) => plugin.installed);
 	const featured = visiblePlugins.filter((plugin) => plugin.featured);
 	// Featured plugins appear in their category section too — Featured is a
 	// spotlight, not a home.
@@ -112,9 +76,9 @@ export function PluginsView() {
 		<PluginCard
 			key={plugin.name}
 			plugin={plugin}
-			isInstalled={isInstalled(plugin)}
+			isInstalled={plugin.installed}
 			isConnected={isConnected(plugin)}
-			isDisabled={disabledNames.has(plugin.name)}
+			isDisabled={plugin.installed && !plugin.enabled}
 			isBusy={isBusy}
 			onOpen={handleOpen}
 			onUninstall={(target) => uninstall(target.name)}
@@ -197,9 +161,7 @@ export function PluginsView() {
 												type="button"
 												aria-label={plugin.interface.displayName}
 												onClick={() => handleOpen(plugin)}
-												className={cn(
-													disabledNames.has(plugin.name) && "opacity-40",
-												)}
+												className={cn(!plugin.enabled && "opacity-40")}
 											>
 												<PluginIcon
 													pluginName={plugin.name}
@@ -209,7 +171,7 @@ export function PluginsView() {
 										</TooltipTrigger>
 										<TooltipContent>
 											{plugin.interface.displayName}
-											{disabledNames.has(plugin.name) ? (
+											{!plugin.enabled ? (
 												<>
 													{" "}
 													<Trans id="dashboard.plugins.disabledSuffix">
@@ -278,7 +240,7 @@ export function PluginsView() {
 					<ManageInstalledDialog
 						open={isManageOpen}
 						onOpenChange={setIsManageOpen}
-						installed={installed ?? []}
+						installed={installedPlugins}
 						isBusy={isBusy}
 						onSetEnabled={setEnabled}
 						onUninstall={uninstall}

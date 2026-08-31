@@ -38,6 +38,32 @@ export async function apiRequest<T>(
 	return payload as T;
 }
 
+/**
+ * Both mcp commands address a plugin by connection id, and the id only comes
+ * from one place — so a wrong or stale one should name that place rather than
+ * leaving the caller to guess which of several ids the API meant.
+ */
+export async function connectionRequest<T>(
+	bearer: string,
+	path: string,
+	init?: RequestInit,
+): Promise<T> {
+	try {
+		return await apiRequest<T>(bearer, path, init);
+	} catch (error) {
+		if (
+			error instanceof CLIError &&
+			/connection not found/i.test(error.message)
+		) {
+			throw new CLIError(
+				error.message,
+				"Run: superset plugins list  (the pluginId column holds the id)",
+			);
+		}
+		throw error;
+	}
+}
+
 export interface AuthInputSpec {
 	name: string;
 	label?: string;

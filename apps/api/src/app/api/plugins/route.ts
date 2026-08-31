@@ -29,6 +29,7 @@ export async function GET(request: Request) {
 			.orderBy(asc(pluginInstalls.pluginName)),
 		db
 			.select({
+				id: pluginConnections.id,
 				pluginName: pluginConnections.pluginName,
 				account: pluginConnections.externalAccountLabel,
 			})
@@ -41,11 +42,13 @@ export async function GET(request: Request) {
 			),
 	]);
 
-	const accounts = new Map<string, string[]>();
+	// The id travels with the label: it is what addresses a tool call, so a
+	// client that lists plugins can call one without a second round trip.
+	const held = new Map<string, { id: string; account: string | null }[]>();
 	for (const row of connections) {
-		const list = accounts.get(row.pluginName) ?? [];
-		if (row.account) list.push(row.account);
-		accounts.set(row.pluginName, list);
+		const list = held.get(row.pluginName) ?? [];
+		list.push({ id: row.id, account: row.account });
+		held.set(row.pluginName, list);
 	}
 
 	const describe = (
@@ -78,13 +81,19 @@ export async function GET(request: Request) {
 		};
 	};
 
-	const installed = installs.map((row) => ({
-		...describe(row.manifest as PluginManifest, row.marketplace),
-		installed: true,
-		enabled: row.enabled,
-		installedAt: row.installedAt,
-		accounts: accounts.get(row.pluginName) ?? [],
-	}));
+	const installed = installs.map((row) => {
+		const connections = held.get(row.pluginName) ?? [];
+		return {
+			...describe(row.manifest as PluginManifest, row.marketplace),
+			installed: true,
+			enabled: row.enabled,
+			installedAt: row.installedAt,
+			connections,
+			accounts: connections
+				.map((connection) => connection.account)
+				.filter((account): account is string => account !== null),
+		};
+	});
 
 	const installedKeys = new Set(
 		installs.map((row) => `${row.marketplace}/${row.pluginName}`),
@@ -98,6 +107,7 @@ export async function GET(request: Request) {
 			...describe(manifest as unknown as PluginManifest, FIRST_PARTY),
 			installed: false,
 			enabled: false,
+			connections: [] as { id: string; account: string | null }[],
 			accounts: [] as string[],
 		}));
 

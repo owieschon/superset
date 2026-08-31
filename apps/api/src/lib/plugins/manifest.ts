@@ -63,11 +63,18 @@ export interface PluginBind {
 	env?: Record<string, string>;
 }
 
+/** Stamped by `plugins publish`; addresses and pins the published artifact. */
+export interface PluginServer {
+	path?: string;
+	integrity?: string;
+}
+
 export interface SupersetExtension {
 	interface?: { displayName: string; category?: string; icon?: string };
 	auth?: PluginAuth;
 	bind?: PluginBind;
 	mcp?: PluginMcp;
+	server?: PluginServer;
 }
 
 export interface PluginManifest {
