@@ -62,7 +62,12 @@ export function PluginsView() {
 		);
 	}, [query, catalog]);
 
+	// Search-filtered, because this drives the Installed row on the page.
 	const installedPlugins = visiblePlugins.filter((plugin) => plugin.installed);
+	// Unfiltered, because the manage dialog is reached from a button and has no
+	// search of its own: scoping it to the query would hide plugins the user is
+	// trying to disable and give them no way to reach them.
+	const allInstalled = catalog.filter((plugin) => plugin.installed);
 	const featured = visiblePlugins.filter((plugin) => plugin.featured);
 	// Featured plugins appear in their category section too — Featured is a
 	// spotlight, not a home.
@@ -265,7 +270,7 @@ export function PluginsView() {
 					<ManageInstalledDialog
 						open={isManageOpen}
 						onOpenChange={setIsManageOpen}
-						installed={installedPlugins}
+						installed={allInstalled}
 						isBusy={isBusy}
 						onSetEnabled={setEnabled}
 						onUninstall={uninstall}

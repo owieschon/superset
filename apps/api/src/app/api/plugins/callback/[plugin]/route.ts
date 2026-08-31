@@ -65,10 +65,11 @@ export async function GET(
 			code,
 		);
 
-		const identity = await resolveIdentity(authSpec.identity, {
-			config: { access_token: token.accessToken },
-			inputs: state.inputs,
-		});
+		const identity = await resolveIdentity(
+			authSpec.identity,
+			{ config: { access_token: token.accessToken }, inputs: state.inputs },
+			authSpec.type,
+		);
 
 		await upsertConnection({
 			userId: state.userId,

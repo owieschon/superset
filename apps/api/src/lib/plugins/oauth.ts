@@ -197,14 +197,21 @@ export interface ResolvedIdentity {
 
 /**
  * Runs the manifest's identity request to learn which external account this
- * connection belongs to. A plugin that declares none gets a generated id and
- * no label — enough to key a row, not enough to tell two accounts apart.
+ * connection belongs to.
+ *
+ * A plugin that declares none gets `fallbackId` and no label. That fallback has
+ * to be stable per caller: the active-connection index is (user, plugin,
+ * externalAccountId), so a fresh id each time would insert a second row instead
+ * of replacing the first, and a plugin with two live connections is refused as
+ * ambiguous at dispatch. One id per auth method means reconnecting replaces,
+ * which is the only behaviour a plugin that cannot name an account can support.
  */
 export async function resolveIdentity(
 	identity: AuthIdentity | undefined,
 	scope: TemplateScope,
+	fallbackId: string,
 ): Promise<ResolvedIdentity> {
-	if (!identity) return { id: randomUUID(), label: null };
+	if (!identity) return { id: fallbackId, label: null };
 
 	const method = identity.method ?? "GET";
 	const headers = resolveTemplateDeep(identity.headers ?? {}, scope);

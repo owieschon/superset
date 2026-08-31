@@ -89,7 +89,9 @@ export async function PATCH(
 	}
 
 	const { plugin } = await params;
-	const body = (await request.json().catch(() => ({}))) as {
+	// `JSON.parse("null")` succeeds and yields null, which then throws on
+	// property access — a 500 for what is a malformed request.
+	const body = ((await request.json().catch(() => ({}))) ?? {}) as {
 		enabled?: unknown;
 	};
 	if (typeof body.enabled !== "boolean") {

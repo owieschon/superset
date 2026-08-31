@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { auth } from "@superset/auth/server";
 import {
 	installedManifest,
@@ -161,10 +160,11 @@ export async function POST(
 
 	let identity: { id: string; label: string | null };
 	try {
-		identity = await resolveIdentity(authSpec.identity, {
-			config: { access_token: credential },
-			inputs,
-		});
+		identity = await resolveIdentity(
+			authSpec.identity,
+			{ config: { access_token: credential }, inputs },
+			authSpec.type,
+		);
 	} catch (error) {
 		return Response.json(
 			{
@@ -184,7 +184,7 @@ export async function POST(
 		secretInputs: (authSpec.inputs ?? [])
 			.filter((input) => input.secret)
 			.map((input) => input.name),
-		externalAccountId: identity.id || randomUUID(),
+		externalAccountId: identity.id,
 		externalAccountLabel: identity.label,
 	});
 

@@ -13,13 +13,17 @@ export default command({
 	],
 	run: async ({ ctx, args }) => {
 		const { name, marketplace } = parsePluginRef(args.plugin as string);
-		const removed = await removePlugin(name, marketplace);
 
-		// Mirrors the UI: removing the account install also disconnects live
-		// credentials, so an uninstalled plugin cannot still be authorized.
+		// The account first, because it holds the credential: removing the
+		// install also disconnects anything authorized for the plugin. Deleting
+		// local files first would, on a failed request, leave a plugin the user
+		// believes is gone still holding a live token. The reverse failure only
+		// leaves stale files, which the next sync reaps.
 		await apiRequest(ctx.bearer, `/api/plugins/${name}/install`, {
 			method: "DELETE",
 		});
+
+		const removed = await removePlugin(name, marketplace);
 
 		return {
 			data: { name: removed.name, marketplace: removed.marketplace },

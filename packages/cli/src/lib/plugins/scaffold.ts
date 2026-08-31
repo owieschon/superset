@@ -250,7 +250,10 @@ export function scaffoldPlugin(
 	};
 
 	if (options.auth) {
-		extension.auth = {
+		// A list, not one method: the manifest schema and every consumer read
+		// `auth` as an array, so scaffolding an object emits a plugin that fails
+		// its own `plugins check`.
+		const method: Record<string, unknown> = {
 			type: "oauth2",
 			provider: name,
 			authorization_url: `https://example.com/oauth/authorize`,
@@ -260,6 +263,7 @@ export function scaffoldPlugin(
 			token_request_auth_method: "client_secret_post",
 			requires_env: requiredEnvFor(name),
 		};
+		extension.auth = [method];
 		if (kind === "url") {
 			extension.bind = {
 				// biome-ignore lint/suspicious/noTemplateCurlyInString: the proxy interpolates this at call time; it must stay a literal
