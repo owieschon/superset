@@ -1,7 +1,10 @@
 import { auth } from "@superset/auth/server";
 import { db } from "@superset/db/client";
 import { pluginConnections, pluginInstalls } from "@superset/db/schema";
-import { FIRST_PARTY_MANIFESTS } from "@superset/shared/plugins";
+import {
+	FIRST_PARTY_MANIFESTS,
+	firstPartyManifest,
+} from "@superset/shared/plugins";
 import { and, asc, eq, isNull } from "drizzle-orm";
 import type { PluginManifest } from "@/lib/plugins/manifest";
 import { supersetExtension } from "@/lib/plugins/manifest";
@@ -83,11 +86,20 @@ export async function GET(request: Request) {
 
 	const installed = installs.map((row) => {
 		const connections = held.get(row.pluginName) ?? [];
+		// The row's manifest is the version this account is pinned to; the
+		// marketplace's is what installing again would move it to. Both are
+		// returned because a client cannot offer an update it cannot see, and
+		// the version alone does not say one exists.
+		const published =
+			row.marketplace === FIRST_PARTY
+				? firstPartyManifest(row.pluginName)?.version
+				: undefined;
 		return {
 			...describe(row.manifest as PluginManifest, row.marketplace),
 			installed: true,
 			enabled: row.enabled,
 			installedAt: row.installedAt,
+			latestVersion: published ?? null,
 			connections,
 			accounts: connections
 				.map((connection) => connection.account)
@@ -107,6 +119,7 @@ export async function GET(request: Request) {
 			...describe(manifest as unknown as PluginManifest, FIRST_PARTY),
 			installed: false,
 			enabled: false,
+			latestVersion: manifest.version as string | null,
 			connections: [] as { id: string; account: string | null }[],
 			accounts: [] as string[],
 		}));

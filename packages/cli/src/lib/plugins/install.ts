@@ -242,9 +242,15 @@ export interface InstallPluginResult {
 	skills: number;
 }
 
+export interface InstallPluginOptions {
+	/** Replace an existing install; without it, an installed plugin is an error. */
+	update?: boolean;
+}
+
 export async function installPlugin(
 	name: string,
 	marketplace?: string,
+	options: InstallPluginOptions = {},
 ): Promise<InstallPluginResult> {
 	const candidates = listAvailable().filter(
 		(a) =>
@@ -270,6 +276,23 @@ export async function installPlugin(
 	const manifestPath = path.join(dir, "plugin.json");
 	if (!fs.existsSync(manifestPath)) {
 		throw new CLIError(`Plugin "${name}" has no plugin.json.`);
+	}
+
+	// An update rewrites the manifest, and the manifest is what decides where a
+	// connected credential gets sent. Replacing one silently on a plain install
+	// would move that destination without the user ever being told, so a second
+	// install is an error until they ask for the change by name.
+	const existing = readInstalledPlugins().find(
+		(p) => p.name === name && p.marketplace === found.marketplace,
+	);
+	if (existing && !options.update) {
+		const available = entry.version ?? "unknown";
+		throw new CLIError(
+			existing.version === available
+				? `"${name}" is already installed at ${existing.version}.`
+				: `"${name}" is already installed at ${existing.version}; ${available} is available.`,
+			`Run: superset plugins install ${name} --update`,
+		);
 	}
 	const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
 		version: string;

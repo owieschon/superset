@@ -6,7 +6,14 @@ import {
 	DropdownMenuItem,
 	DropdownMenuTrigger,
 } from "@superset/ui/dropdown-menu";
-import { LuCheck, LuEllipsis, LuPause, LuPlay, LuTrash2 } from "react-icons/lu";
+import {
+	LuArrowUp,
+	LuCheck,
+	LuEllipsis,
+	LuPause,
+	LuPlay,
+	LuTrash2,
+} from "react-icons/lu";
 import { PluginIcon } from "renderer/routes/_authenticated/_dashboard/plugins/components/PluginIcon";
 import { PluginKindBadges } from "renderer/routes/_authenticated/_dashboard/plugins/components/PluginKindBadges";
 import type { CatalogPlugin } from "renderer/routes/_authenticated/_dashboard/plugins/hooks/usePluginCatalog";
@@ -23,6 +30,7 @@ interface PluginCardProps {
 	onOpen: (plugin: CatalogPlugin) => void;
 	onUninstall: (plugin: CatalogPlugin) => void;
 	onSetEnabled: (name: string, enabled: boolean) => void;
+	onUpdate: (name: string) => void;
 }
 
 export function PluginCard({
@@ -34,6 +42,7 @@ export function PluginCard({
 	onOpen,
 	onUninstall,
 	onSetEnabled,
+	onUpdate,
 }: PluginCardProps) {
 	const { t } = useLingui();
 	return (
@@ -58,7 +67,14 @@ export function PluginCard({
 				<div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
 					{plugin.interface.displayName}
 					<PluginKindBadges plugin={plugin} />
-					{isConnected && !isDisabled && (
+					{plugin.updateAvailable && (
+						<span className="shrink-0 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+							<Trans id="dashboard.plugins.card.updateAvailable">
+								Update available
+							</Trans>
+						</span>
+					)}
+					{isConnected && !isDisabled && !plugin.updateAvailable && (
 						<LuCheck className="size-3.5 shrink-0 text-muted-foreground" />
 					)}
 					{isInstalled && !isConnected && !isDisabled && (
@@ -95,6 +111,15 @@ export function PluginCard({
 						</Button>
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="end">
+						{plugin.updateAvailable && (
+							<DropdownMenuItem
+								disabled={isBusy}
+								onSelect={() => onUpdate(plugin.name)}
+							>
+								<LuArrowUp className="size-4" />
+								<Trans id="dashboard.plugins.update">Update</Trans>
+							</DropdownMenuItem>
+						)}
 						<DropdownMenuItem
 							disabled={isBusy}
 							onSelect={() => onSetEnabled(plugin.name, isDisabled)}

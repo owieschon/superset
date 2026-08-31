@@ -154,6 +154,35 @@ export function usePluginMutations() {
 		},
 	});
 
+	// Same local write as install; only the toast differs, because "installed"
+	// is a confusing thing to read after asking for an update.
+	const updateMutation = electronTrpc.plugins.install.useMutation({
+		onSuccess: (_data, variables) => {
+			posthog.capture("plugin_updated", { plugin: variables.name });
+			toast.success(
+				t({
+					id: "dashboard.plugins.mutations.updated",
+					message: `${displayName(variables.name)} updated`,
+				}),
+				{
+					description: t({
+						id: "dashboard.plugins.mutations.takesEffectNewSessions",
+						message: "Takes effect in new agent sessions.",
+					}),
+				},
+			);
+		},
+		onError: (error) => {
+			toast.error(
+				t({
+					id: "dashboard.plugins.mutations.updateFailed",
+					message: "Could not update plugin",
+				}),
+				{ description: errorMessage(error) },
+			);
+		},
+	});
+
 	/**
 	 * Add: install here and on the account, and land on the plugin's page.
 	 *
@@ -167,8 +196,20 @@ export function usePluginMutations() {
 		await syncAccount(name, "install");
 	};
 
+	/**
+	 * Update: the same two writes as an install, run against a plugin that is
+	 * already installed. Separated because the account upsert always lands on
+	 * the marketplace's current version, so this is the only path that moves
+	 * one — and it is worth the user having asked for it by name.
+	 */
+	const update = async (name: string): Promise<void> => {
+		await updateMutation.mutateAsync({ name });
+		await syncAccount(name, "install");
+	};
+
 	return {
 		add,
+		update,
 		install: async (name: string) => {
 			await installMutation.mutateAsync({ name });
 			await syncAccount(name, "install");
@@ -178,6 +219,7 @@ export function usePluginMutations() {
 			setEnabledMutation.mutate({ name, enabled }),
 		isBusy:
 			installMutation.isPending ||
+			updateMutation.isPending ||
 			uninstallMutation.isPending ||
 			setEnabledMutation.isPending,
 	};

@@ -2,7 +2,7 @@ import { Trans, useLingui } from "@lingui/react/macro";
 import { Button } from "@superset/ui/button";
 import { Switch } from "@superset/ui/switch";
 import { useNavigate } from "@tanstack/react-router";
-import { LuArrowLeft, LuExternalLink } from "react-icons/lu";
+import { LuArrowLeft, LuArrowUp, LuExternalLink } from "react-icons/lu";
 import { PluginIcon } from "renderer/routes/_authenticated/_dashboard/plugins/components/PluginIcon";
 import { SkillIcon } from "renderer/routes/_authenticated/_dashboard/plugins/components/SkillIcon";
 import type { CatalogPlugin } from "renderer/routes/_authenticated/_dashboard/plugins/hooks/usePluginCatalog";
@@ -28,7 +28,7 @@ function InfoRow({
 export function PluginDetail({ plugin }: { plugin: CatalogPlugin }) {
 	const { t } = useLingui();
 	const navigate = useNavigate();
-	const { add, uninstall, setEnabled, isBusy } = usePluginMutations();
+	const { add, uninstall, setEnabled, update, isBusy } = usePluginMutations();
 
 	const skills = plugin.pluginSkills ?? [];
 
@@ -59,18 +59,30 @@ export function PluginDetail({ plugin }: { plugin: CatalogPlugin }) {
 						</p>
 					</div>
 
-					{plugin.installed && (
-						<Switch
-							checked={plugin.enabled}
-							disabled={isBusy}
-							aria-label={t({
-								id: "dashboard.plugins.detail.pluginEnabledLabel",
-								message: `${plugin.interface.displayName} enabled`,
-							})}
-							onCheckedChange={(checked) => setEnabled(plugin.name, checked)}
-							className="shrink-0"
-						/>
-					)}
+					<div className="flex shrink-0 items-center gap-3">
+						{plugin.updateAvailable && (
+							<Button
+								size="sm"
+								variant="outline"
+								disabled={isBusy}
+								onClick={() => void update(plugin.name)}
+							>
+								<LuArrowUp className="size-4" />
+								<Trans id="dashboard.plugins.update">Update</Trans>
+							</Button>
+						)}
+						{plugin.installed && (
+							<Switch
+								checked={plugin.enabled}
+								disabled={isBusy}
+								aria-label={t({
+									id: "dashboard.plugins.detail.pluginEnabledLabel",
+									message: `${plugin.interface.displayName} enabled`,
+								})}
+								onCheckedChange={(checked) => setEnabled(plugin.name, checked)}
+							/>
+						)}
+					</div>
 				</div>
 			</div>
 
@@ -158,6 +170,9 @@ export function PluginDetail({ plugin }: { plugin: CatalogPlugin }) {
 						}
 					>
 						{plugin.version}
+						{plugin.updateAvailable && plugin.latestVersion
+							? ` → ${plugin.latestVersion}`
+							: ""}
 					</InfoRow>
 					<InfoRow
 						label={

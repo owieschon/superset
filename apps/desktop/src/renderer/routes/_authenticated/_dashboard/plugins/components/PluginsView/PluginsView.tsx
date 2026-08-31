@@ -2,6 +2,7 @@ import { Trans, useLingui } from "@lingui/react/macro";
 import { PLUGIN_CATEGORIES } from "@superset/shared/plugins";
 import { Button } from "@superset/ui/button";
 import { Input } from "@superset/ui/input";
+import { Skeleton } from "@superset/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@superset/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
@@ -35,7 +36,7 @@ export function PluginsView() {
 	const isConnected = (plugin: CatalogPlugin) =>
 		plugin.installed && (!plugin.auth || plugin.accounts.length > 0);
 
-	const { uninstall, setEnabled, isBusy } = usePluginMutations();
+	const { uninstall, setEnabled, update, isBusy } = usePluginMutations();
 
 	const handleOpen = (plugin: CatalogPlugin) => {
 		navigate({
@@ -72,6 +73,27 @@ export function PluginsView() {
 		),
 	})).filter(({ plugins }) => plugins.length > 0);
 
+	const skeletonCards = (
+		<section className="flex flex-col gap-3">
+			<Skeleton className="h-5 w-24" />
+			<div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+				{Array.from({ length: 6 }, (_, index) => (
+					<div
+						// biome-ignore lint/suspicious/noArrayIndexKey: placeholders have no identity
+						key={index}
+						className="flex items-center gap-3 rounded-lg p-3"
+					>
+						<Skeleton className="size-9 shrink-0 rounded-lg" />
+						<div className="flex min-w-0 flex-1 flex-col gap-1.5">
+							<Skeleton className="h-4 w-28" />
+							<Skeleton className="h-3 w-full max-w-56" />
+						</div>
+					</div>
+				))}
+			</div>
+		</section>
+	);
+
 	const renderCard = (plugin: CatalogPlugin) => (
 		<PluginCard
 			key={plugin.name}
@@ -83,6 +105,7 @@ export function PluginsView() {
 			onOpen={handleOpen}
 			onUninstall={(target) => uninstall(target.name)}
 			onSetEnabled={setEnabled}
+			onUpdate={(name) => void update(name)}
 		/>
 	);
 
@@ -123,7 +146,9 @@ export function PluginsView() {
 						/>
 					</div>
 
-					{installedPlugins.length > 0 && (
+					{isCatalogLoading && skeletonCards}
+
+					{!isCatalogLoading && installedPlugins.length > 0 && (
 						<section className="flex flex-col gap-3">
 							<div className="flex items-center justify-between">
 								<h2 className="text-sm font-semibold text-foreground">

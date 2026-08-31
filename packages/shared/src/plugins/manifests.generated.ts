@@ -87,7 +87,7 @@ export const FIRST_PARTY_MANIFESTS = {
 	"linear": {
 		"$schema": "https://superset.sh/schemas/plugin/1.0.0.json",
 		"name": "linear",
-		"version": "1.1.0",
+		"version": "1.2.0",
 		"description": "Plan and build products: create, search, and update Linear issues.",
 		"author": {
 			"name": "Superset",
@@ -195,6 +195,10 @@ export const FIRST_PARTY_MANIFESTS = {
 			{
 				"name": "cycle-review",
 				"description": "Review a Linear cycle — what shipped, what slipped, and what should carry over. Use when a cycle or sprint is ending, someone asks what got done this cycle, why work slipped, what to pull into the next one, or wants a summary to share with the team."
+			},
+			{
+				"name": "project-status",
+				"description": "Draft a Linear project status update from what actually moved — progress, risks, and the one decision that needs making. Use when someone asks for a project update, a status post, where a project stands, whether it will land on time, or what to tell stakeholders."
 			}
 		]
 	} as const,

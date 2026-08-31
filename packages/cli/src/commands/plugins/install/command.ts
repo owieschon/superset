@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { positional, string, table } from "@superset/cli-framework";
+import { boolean, positional, string, table } from "@superset/cli-framework";
 import { command } from "../../../lib/command";
 import {
 	type AuthInputSpec,
@@ -37,6 +37,9 @@ export default command({
 		inputs: string().desc(
 			'Credential inputs as JSON, or "-" to read them from stdin',
 		),
+		update: boolean().desc(
+			"Replace an existing install with the marketplace's current version, and re-sync its skills",
+		),
 	},
 	display: (data) =>
 		table(
@@ -51,7 +54,9 @@ export default command({
 
 		// Local first: skills on disk and agent config are what the machine
 		// needs, and they work whether or not the account call succeeds.
-		const local = await installPlugin(name, marketplace);
+		const local = await installPlugin(name, marketplace, {
+			update: Boolean(options.update),
+		});
 
 		// The local install already succeeded, so a failure here is partial, not
 		// total: report it rather than throwing away that fact. Same split the

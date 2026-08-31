@@ -29,6 +29,9 @@ export interface AuthMethod {
 export interface CatalogPlugin extends PluginCatalogEntry {
 	marketplace: string;
 	installed: boolean;
+	/** What installing again would move to; differs from `version` when stale. */
+	latestVersion: string | null;
+	updateAvailable: boolean;
 	enabled: boolean;
 	accounts: string[];
 	pluginSkills: PluginSkill[];
@@ -53,6 +56,7 @@ interface CatalogResponse {
 		}[];
 		mcpUrl: string | null;
 		installed: boolean;
+		latestVersion: string | null;
 		enabled: boolean;
 		accounts: string[];
 		skills: PluginSkill[];
@@ -110,6 +114,11 @@ export function usePluginCatalog() {
 				skills: plugin.skills.map((skill) => skill.name),
 				marketplace: plugin.marketplace,
 				installed: plugin.installed,
+				latestVersion: plugin.latestVersion,
+				updateAvailable:
+					plugin.installed &&
+					plugin.latestVersion !== null &&
+					plugin.latestVersion !== plugin.version,
 				enabled: plugin.enabled,
 				accounts: plugin.accounts,
 				pluginSkills: plugin.skills,
