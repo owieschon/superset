@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
+	chmodSync,
+	cpSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -157,6 +160,57 @@ describe("createManagedSkills", () => {
 				),
 			),
 		).toBe(true);
+	});
+
+	it("mirrors packaged extras from the real bundled plugin on install and reprovision", async () => {
+		const packagedTemplates = path.join(TEST_ROOT, "packaged-templates");
+		cpSync(
+			path.resolve(import.meta.dir, "../../../plugins/superset"),
+			path.join(packagedTemplates, "plugin"),
+			{ recursive: true },
+		);
+		// Electron's ASAR fs shim does not expose the source executable bit.
+		chmodSync(
+			path.join(
+				packagedTemplates,
+				"plugin",
+				"skills",
+				"10x",
+				"scripts",
+				"audit.sh",
+			),
+			0o644,
+		);
+		const provisionPackagedPlugin = () =>
+			createManagedSkills({
+				homeDir: HOME_DIR,
+				templatesDir: packagedTemplates,
+			});
+
+		await provisionPackagedPlugin();
+		const auditScript = path.join(
+			agentsSkills,
+			"superset-10x",
+			"scripts",
+			"audit.sh",
+		);
+		expect(readFileSync(auditScript, "utf-8")).toContain(
+			"run_json auth whoami",
+		);
+		expect(statSync(auditScript).mode & 0o111).not.toBe(0);
+
+		const staleExtra = path.join(
+			agentsSkills,
+			"superset-10x",
+			"scripts",
+			"removed.sh",
+		);
+		writeFileSync(staleExtra, "stale\n");
+
+		await provisionPackagedPlugin();
+
+		expect(existsSync(staleExtra)).toBe(false);
+		expect(existsSync(auditScript)).toBe(true);
 	});
 
 	it("provisions in-app commands for feedback and 10x only", async () => {
