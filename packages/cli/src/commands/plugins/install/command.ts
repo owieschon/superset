@@ -9,7 +9,7 @@ import {
 	parseInputs,
 	readStdin,
 } from "../../../lib/plugins/api";
-import { parsePluginRef } from "../../../lib/plugins/host";
+import { resolvePluginRef } from "../../../lib/plugins/host";
 import {
 	ensureDefaultMarketplace,
 	installPlugin,
@@ -34,6 +34,9 @@ export default command({
 			.desc("Plugin name, or name@marketplace to disambiguate"),
 	],
 	options: {
+		marketplace: string().desc(
+			"Which marketplace to install from, when several offer this name",
+		),
 		inputs: string().desc(
 			'Credential inputs as JSON, or "-" to read them from stdin',
 		),
@@ -50,7 +53,10 @@ export default command({
 		),
 	run: async ({ ctx, args, options }) => {
 		await ensureDefaultMarketplace();
-		const { name, marketplace } = parsePluginRef(args.plugin as string);
+		const { name, marketplace } = resolvePluginRef(
+			args.plugin as string,
+			options.marketplace as string | undefined,
+		);
 
 		// Local first: skills on disk and agent config are what the machine
 		// needs, and they work whether or not the account call succeeds.

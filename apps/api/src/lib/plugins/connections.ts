@@ -10,7 +10,7 @@ import {
 	DEFAULT_MARKETPLACE_REF,
 	DEFAULT_MARKETPLACE_REPO,
 } from "@superset/shared/plugins";
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, countDistinct, desc, eq, isNull } from "drizzle-orm";
 import {
 	decryptOptional,
 	decryptSecret,
@@ -274,6 +274,60 @@ export async function installedPlugin(
 		manifest: row.manifest as PluginManifest,
 		marketplace: row.marketplace,
 	};
+}
+
+/**
+ * The install a lifecycle request names, enabled or not.
+ *
+ * `installedPlugin` is for resolving a manifest to send a credential through,
+ * so it only ever answers with an enabled install. Uninstalling and toggling
+ * have to reach a disabled one, and they still must not act on two rows at
+ * once — a DELETE matched by name alone revokes the credential of every
+ * marketplace that carries it.
+ */
+export async function installRecord(
+	userId: string,
+	pluginName: string,
+	marketplace?: string,
+): Promise<{ id: string; marketplace: string; siblings: number } | null> {
+	const rows = await db
+		.select({
+			id: pluginInstalls.id,
+			marketplace: pluginInstalls.marketplace,
+		})
+		.from(pluginInstalls)
+		.where(
+			and(
+				eq(pluginInstalls.userId, userId),
+				eq(pluginInstalls.pluginName, pluginName),
+				marketplace ? eq(pluginInstalls.marketplace, marketplace) : undefined,
+			),
+		)
+		.orderBy(asc(pluginInstalls.marketplace));
+
+	if (rows.length > 1) {
+		throw new AmbiguousPluginError(
+			pluginName,
+			rows.map((entry) => entry.marketplace),
+		);
+	}
+
+	const row = rows[0];
+	if (!row) return null;
+
+	// Only when this is the user's single install of the name can a connection
+	// that predates install_id be attributed to it.
+	const [{ count } = { count: 0 }] = await db
+		.select({ count: countDistinct(pluginInstalls.id) })
+		.from(pluginInstalls)
+		.where(
+			and(
+				eq(pluginInstalls.userId, userId),
+				eq(pluginInstalls.pluginName, pluginName),
+			),
+		);
+
+	return { id: row.id, marketplace: row.marketplace, siblings: count };
 }
 
 /**

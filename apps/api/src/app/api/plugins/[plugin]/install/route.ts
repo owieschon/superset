@@ -2,9 +2,56 @@ import { auth } from "@superset/auth/server";
 import { db } from "@superset/db/client";
 import { pluginConnections, pluginInstalls } from "@superset/db/schema";
 import { firstPartyManifest } from "@superset/shared/plugins";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
+import { installRecord, pluginErrorResponse } from "@/lib/plugins/connections";
 
 const FIRST_PARTY_MARKETPLACE = "superset";
+
+/**
+ * The install this request is about, or a response saying why there isn't one.
+ *
+ * `?marketplace=` names it when a plugin name is carried by more than one;
+ * without it an ambiguous name is a 409 rather than a silent match against
+ * every row, because both callers below act on credentials.
+ */
+async function resolveInstall(
+	userId: string,
+	plugin: string,
+	request: Request,
+): Promise<
+	| {
+			ok: true;
+			install: NonNullable<Awaited<ReturnType<typeof installRecord>>>;
+	  }
+	| { ok: false; response: Response }
+> {
+	const marketplace =
+		new URL(request.url).searchParams.get("marketplace") ?? undefined;
+
+	let install: Awaited<ReturnType<typeof installRecord>>;
+	try {
+		install = await installRecord(userId, plugin, marketplace);
+	} catch (error) {
+		const response = pluginErrorResponse(error);
+		if (!response) throw error;
+		return { ok: false, response };
+	}
+
+	if (!install) {
+		return {
+			ok: false,
+			response: Response.json(
+				{
+					error: marketplace
+						? `"${plugin}" is not installed from "${marketplace}"`
+						: `"${plugin}" is not installed`,
+				},
+				{ status: 404 },
+			),
+		};
+	}
+	return { ok: true, install };
+}
 
 /**
  * Records that a user installed a plugin, storing the manifest the proxy and
@@ -101,15 +148,13 @@ export async function PATCH(
 		);
 	}
 
+	const resolved = await resolveInstall(session.user.id, plugin, request);
+	if (!resolved.ok) return resolved.response;
+
 	const [row] = await db
 		.update(pluginInstalls)
 		.set({ enabled: body.enabled })
-		.where(
-			and(
-				eq(pluginInstalls.userId, session.user.id),
-				eq(pluginInstalls.pluginName, plugin),
-			),
-		)
+		.where(eq(pluginInstalls.id, resolved.install.id))
 		.returning();
 
 	if (!row) {
@@ -119,7 +164,11 @@ export async function PATCH(
 		);
 	}
 
-	return Response.json({ plugin, enabled: row.enabled });
+	return Response.json({
+		plugin,
+		marketplace: row.marketplace,
+		enabled: row.enabled,
+	});
 }
 
 /** Uninstall, and disconnect anything authorized for the plugin. */
@@ -134,27 +183,39 @@ export async function DELETE(
 
 	const { plugin } = await params;
 
-	await db
-		.delete(pluginInstalls)
-		.where(
-			and(
-				eq(pluginInstalls.userId, session.user.id),
-				eq(pluginInstalls.pluginName, plugin),
-			),
-		);
+	const resolved = await resolveInstall(session.user.id, plugin, request);
+	if (!resolved.ok) return resolved.response;
+	const { id, marketplace, siblings } = resolved.install;
 
-	// Leaving live connections behind would keep a usable credential for a
-	// plugin the user believes they removed.
+	// Disconnect before deleting: install_id is `set null` on delete, so the
+	// other order loses the only link saying which connections were this
+	// install's.
+	//
+	// Connections written before install_id existed carry none, and can only be
+	// attributed to this install when it is the user's single one of that name.
+	// With a sibling install present, an unattributed row is left alone rather
+	// than revoked on a guess — leaving a live credential is recoverable, and
+	// revoking the wrong one is not.
 	await db
 		.update(pluginConnections)
 		.set({ disconnectedAt: new Date(), disconnectReason: "plugin_uninstalled" })
 		.where(
 			and(
 				eq(pluginConnections.userId, session.user.id),
-				eq(pluginConnections.pluginName, plugin),
 				isNull(pluginConnections.disconnectedAt),
+				siblings === 1
+					? or(
+							eq(pluginConnections.installId, id),
+							and(
+								isNull(pluginConnections.installId),
+								eq(pluginConnections.pluginName, plugin),
+							),
+						)
+					: eq(pluginConnections.installId, id),
 			),
 		);
 
-	return Response.json({ uninstalled: plugin });
+	await db.delete(pluginInstalls).where(eq(pluginInstalls.id, id));
+
+	return Response.json({ uninstalled: plugin, marketplace });
 }

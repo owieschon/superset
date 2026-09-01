@@ -10,13 +10,24 @@ import {
 	parseInputs,
 	readStdin,
 } from "../../../lib/plugins/api";
-import { findInstalled, readInstalledPlugins } from "../../../lib/plugins/host";
+import {
+	findInstalled,
+	readInstalledPlugins,
+	resolvePluginRef,
+} from "../../../lib/plugins/host";
 import { supersetExtension } from "../../../lib/plugins/marketplace";
 
 export default command({
 	description: "Connect an account to an installed plugin",
-	args: [positional("plugin").required().desc("Plugin name")],
+	args: [
+		positional("plugin")
+			.required()
+			.desc("Plugin name, or name@marketplace to disambiguate"),
+	],
 	options: {
+		marketplace: string().desc(
+			"Which marketplace's install to connect, when several offer this name",
+		),
 		method: string()
 			.enum("oauth2", "api_key")
 			.desc("Which declared auth method to use, when a plugin offers several"),
@@ -32,11 +43,16 @@ export default command({
 			[18, 16, 60],
 		),
 	run: async ({ ctx, args, options }) => {
-		const name = args.plugin as string;
-		const installed = findInstalled(readInstalledPlugins(), name);
+		const { name, marketplace } = resolvePluginRef(
+			args.plugin as string,
+			options.marketplace as string | undefined,
+		);
+		const installed = findInstalled(readInstalledPlugins(), name, marketplace);
 		if (!installed) {
 			throw new CLIError(
-				`"${name}" is not installed. Run: superset plugins install ${name}`,
+				marketplace
+					? `"${name}" is not installed from "${marketplace}". Run: superset plugins install ${name} --marketplace ${marketplace}`
+					: `"${name}" is not installed. Run: superset plugins install ${name}`,
 			);
 		}
 

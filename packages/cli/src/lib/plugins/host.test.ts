@@ -5,8 +5,11 @@ import path from "node:path";
 import { readInstalledPluginSources } from "@superset/agent-setup";
 import {
 	assertSafeSegment,
+	findInstalled,
+	type InstalledPlugin,
 	parsePluginRef,
 	pluginsRoot,
+	resolvePluginRef,
 	supersetHome,
 	writeInstalledPlugins,
 } from "./host";
@@ -108,6 +111,82 @@ describe("parsePluginRef", () => {
 
 	test("does not treat a leading @ as a separator", () => {
 		expect(parsePluginRef("@scoped")).toEqual({ name: "@scoped" });
+	});
+});
+
+describe("resolvePluginRef", () => {
+	test("takes the marketplace from --marketplace", () => {
+		expect(resolvePluginRef("linear", "acme")).toEqual({
+			name: "linear",
+			marketplace: "acme",
+		});
+	});
+
+	test("takes it from the @ suffix when the flag is absent", () => {
+		expect(resolvePluginRef("linear@acme", undefined)).toEqual({
+			name: "linear",
+			marketplace: "acme",
+		});
+	});
+
+	test("accepts both spellings when they agree", () => {
+		expect(resolvePluginRef("linear@acme", "acme")).toEqual({
+			name: "linear",
+			marketplace: "acme",
+		});
+	});
+
+	// Silently preferring one is how a user asking for acme's plugin acts on
+	// superset's; there is no reading of this that is not a typo.
+	test("refuses two spellings that disagree", () => {
+		expect(() => resolvePluginRef("linear@acme", "superset")).toThrow(
+			/names marketplace "acme" but --marketplace says "superset"/,
+		);
+	});
+
+	test("leaves a bare name unscoped", () => {
+		expect(resolvePluginRef("linear", undefined)).toEqual({
+			name: "linear",
+			marketplace: undefined,
+		});
+	});
+});
+
+describe("findInstalled", () => {
+	const install = (name: string, marketplace: string): InstalledPlugin => ({
+		marketplace,
+		name,
+		version: "1.0.0",
+		installPath: `/cache/${marketplace}/${name}`,
+		installedAt: "2026-08-31T00:00:00.000Z",
+		enabled: true,
+	});
+
+	const collision = [install("linear", "acme"), install("linear", "superset")];
+
+	test("returns the only match for a bare name", () => {
+		expect(findInstalled([install("linear", "superset")], "linear")).toEqual(
+			install("linear", "superset"),
+		);
+	});
+
+	// The install's plugin.json decides which auth questions get asked and which
+	// manifest the credential is resolved against, so picking whichever record
+	// sorts first connects an account to a plugin the user did not name.
+	test("refuses rather than picks when a name spans marketplaces", () => {
+		expect(() => findInstalled(collision, "linear")).toThrow(
+			/installed from acme, superset/,
+		);
+	});
+
+	test("a named marketplace resolves the collision", () => {
+		expect(findInstalled(collision, "linear", "acme")).toEqual(
+			install("linear", "acme"),
+		);
+	});
+
+	test("returns nothing for a marketplace with no such install", () => {
+		expect(findInstalled(collision, "linear", "other")).toBeUndefined();
 	});
 });
 

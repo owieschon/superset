@@ -12,6 +12,7 @@ import {
 	DEFAULT_MARKETPLACE,
 	DEFAULT_MARKETPLACE_REF,
 	DEFAULT_MARKETPLACE_REPO,
+	findInstalled,
 	type InstalledPlugin,
 	type KnownMarketplace,
 	type MarketplaceSource,
@@ -351,9 +352,7 @@ export async function removePlugin(
 	marketplace?: string,
 ): Promise<InstalledPlugin> {
 	const plugins = readInstalledPlugins();
-	const match = plugins.find(
-		(p) => p.name === name && (!marketplace || p.marketplace === marketplace),
-	);
+	const match = findInstalled(plugins, name, marketplace);
 	if (!match) throw new CLIError(`"${name}" is not installed.`);
 
 	writeInstalledPlugins(plugins.filter((p) => p !== match));

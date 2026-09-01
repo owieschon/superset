@@ -168,14 +168,29 @@ export function pluginCachePath(
 	);
 }
 
+/**
+ * The one install a name refers to, or nothing.
+ *
+ * Refuses rather than picks when a name spans marketplaces: the install's
+ * plugin.json decides which auth questions get asked and which manifest the
+ * credential is then resolved against, so answering with whichever record
+ * happens to sort first connects an account to a plugin the user did not name.
+ */
 export function findInstalled(
 	plugins: InstalledPlugin[],
 	name: string,
 	marketplace?: string,
 ): InstalledPlugin | undefined {
-	return plugins.find(
+	const matches = plugins.filter(
 		(p) => p.name === name && (!marketplace || p.marketplace === marketplace),
 	);
+	if (matches.length > 1) {
+		throw new CLIError(
+			`"${name}" is installed from ${matches.map((p) => p.marketplace).join(", ")}.`,
+			`Name one with --marketplace <name>, or ${name}@<marketplace>.`,
+		);
+	}
+	return matches[0];
 }
 
 export function parsePluginRef(ref: string): {
@@ -185,4 +200,25 @@ export function parsePluginRef(ref: string): {
 	const at = ref.lastIndexOf("@");
 	if (at <= 0) return { name: ref };
 	return { name: ref.slice(0, at), marketplace: ref.slice(at + 1) };
+}
+
+/**
+ * The plugin a command was asked for, from either spelling.
+ *
+ * `--marketplace` is the one an agent can fill from a manifest field; the
+ * `name@marketplace` suffix stays because error messages and docs already
+ * teach it. Two spellings that disagree is a typo, not a precedence question,
+ * so it stops here rather than silently picking one.
+ */
+export function resolvePluginRef(
+	ref: string,
+	marketplace?: string,
+): { name: string; marketplace?: string } {
+	const parsed = parsePluginRef(ref);
+	if (parsed.marketplace && marketplace && parsed.marketplace !== marketplace) {
+		throw new CLIError(
+			`"${ref}" names marketplace "${parsed.marketplace}" but --marketplace says "${marketplace}". Pass one or the other.`,
+		);
+	}
+	return { name: parsed.name, marketplace: marketplace ?? parsed.marketplace };
 }
