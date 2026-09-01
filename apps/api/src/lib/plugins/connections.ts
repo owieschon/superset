@@ -102,13 +102,6 @@ export async function upsertConnection(
 		externalAccountLabel: input.externalAccountLabel ?? null,
 	};
 
-	// The active-row index is keyed on install_id, and Postgres counts NULLs as
-	// distinct — so a live row that lost its install would not conflict, and
-	// reconnecting the same account would add a second live row rather than
-	// replace it. Uninstalling disconnects before it clears the link, but an
-	// organization delete cascades the install while leaving a connection whose
-	// own organization_id is null, which is the case that gets here. Retire
-	// those first so the insert below is the only live row for the account.
 	await db
 		.update(pluginConnections)
 		.set({ disconnectedAt: new Date(), disconnectReason: "install_removed" })
@@ -296,15 +289,6 @@ export async function installedPlugin(
 	};
 }
 
-/**
- * The install a lifecycle request names, enabled or not.
- *
- * `installedPlugin` is for resolving a manifest to send a credential through,
- * so it only ever answers with an enabled install. Uninstalling and toggling
- * have to reach a disabled one, and they still must not act on two rows at
- * once — a DELETE matched by name alone revokes the credential of every
- * marketplace that carries it.
- */
 export async function installRecord(
 	userId: string,
 	pluginName: string,
@@ -335,8 +319,6 @@ export async function installRecord(
 	const row = rows[0];
 	if (!row) return null;
 
-	// Only when this is the user's single install of the name can a connection
-	// that predates install_id be attributed to it.
 	const [{ count } = { count: 0 }] = await db
 		.select({ count: countDistinct(pluginInstalls.id) })
 		.from(pluginInstalls)
@@ -354,8 +336,7 @@ export async function installRecord(
  * The install a connection was granted against, by id.
  *
  * This is the path that cannot be ambiguous: the connection names one row, so
- * no marketplace has to be guessed from a plugin name. Connections written
- * before install_id existed have none, and fall back to resolving by name.
+ * no marketplace has to be guessed from a plugin name.
  */
 export async function installById(
 	userId: string,
@@ -395,7 +376,7 @@ export async function installForConnection(
 ): Promise<InstalledPlugin | null> {
 	return connection.installId
 		? await installById(userId, connection.installId)
-		: await installedPlugin(userId, connection.pluginName);
+		: null;
 }
 
 export async function installedManifest(
@@ -528,7 +509,9 @@ async function resolvePluginContext(
 		};
 	}
 
-	const rows = await listConnections(userId, pluginName);
+	const rows = (await listConnections(userId, pluginName)).filter(
+		(row) => row.installId === install.id,
+	);
 	if (rows.length === 0) {
 		return {
 			ok: false,

@@ -171,6 +171,27 @@ function digestOf(source: Buffer): string {
 	return `sha256-${createHash("sha256").update(source).digest("base64")}`;
 }
 
+async function* streamOf(response: Response): AsyncGenerator<Buffer> {
+	const reader = response.body?.getReader();
+	if (!reader) return;
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) return;
+		if (value) yield Buffer.from(value);
+	}
+}
+
+let serverCacheDir: string | undefined;
+function cacheDir(): string {
+	if (!serverCacheDir) {
+		serverCacheDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), "superset-plugin-servers-"),
+		);
+		fs.chmodSync(serverCacheDir, 0o700);
+	}
+	return serverCacheDir;
+}
+
 /**
  * Downloads the exact artifact the installed version published.
  *
@@ -195,13 +216,29 @@ async function fetchServer(
 		);
 	}
 
-	const body = Buffer.from(await response.arrayBuffer());
-	if (body.byteLength > MAX_SERVER_BYTES) {
-		throw new PluginDispatchError(
-			`Server for "${pluginName}" is ${body.byteLength} bytes, over the ${MAX_SERVER_BYTES} limit.`,
+	const chunks: Buffer[] = [];
+	let total = 0;
+	const tooLarge = () =>
+		new PluginDispatchError(
+			`Server for "${pluginName}" is over the ${MAX_SERVER_BYTES} byte limit.`,
 			502,
 		);
+
+	const declared = Number(response.headers.get("content-length"));
+	if (Number.isFinite(declared) && declared > MAX_SERVER_BYTES) {
+		await response.body?.cancel();
+		throw tooLarge();
 	}
+
+	for await (const chunk of streamOf(response)) {
+		total += chunk.byteLength;
+		if (total > MAX_SERVER_BYTES) {
+			await response.body?.cancel();
+			throw tooLarge();
+		}
+		chunks.push(chunk);
+	}
+	const body = Buffer.concat(chunks);
 
 	const actual = digestOf(body);
 	if (actual !== ref.integrity) {
@@ -249,12 +286,18 @@ async function bundledRun(
 		// Base64url of the digest: it is the cache key, and it cannot contain a
 		// path separator the way the raw base64 can.
 		const key = Buffer.from(ref.integrity).toString("base64url");
-		const dir = path.join(os.tmpdir(), "superset-plugin-servers");
+		const dir = cacheDir();
 		const file = path.join(dir, `${key}.mjs`);
 
-		if (!fs.existsSync(file)) {
+		let usable = false;
+		try {
+			usable = digestOf(await fs.promises.readFile(file)) === ref.integrity;
+		} catch {
+			usable = false;
+		}
+
+		if (!usable) {
 			const body = await fetchServer(pluginName, source, ref);
-			await fs.promises.mkdir(dir, { recursive: true });
 			// Written then renamed: two concurrent requests on a cold start would
 			// otherwise let one import a half-written module.
 			const staging = `${file}.${process.pid}.partial`;

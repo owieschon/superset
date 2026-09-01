@@ -27,10 +27,6 @@ export default command({
 		// local files first would, on a failed request, leave a plugin the user
 		// believes is gone still holding a live token. The reverse failure only
 		// leaves stale files, which the next sync reaps.
-		//
-		// The marketplace goes with it: the account deletion is scoped to one
-		// install, and without it a name carried by two marketplaces would
-		// uninstall and disconnect both while only one local copy went away.
 		const query = marketplace
 			? `?marketplace=${encodeURIComponent(marketplace)}`
 			: "";

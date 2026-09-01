@@ -7,13 +7,6 @@ import { installRecord, pluginErrorResponse } from "@/lib/plugins/connections";
 
 const FIRST_PARTY_MARKETPLACE = "superset";
 
-/**
- * The install this request is about, or a response saying why there isn't one.
- *
- * `?marketplace=` names it when a plugin name is carried by more than one;
- * without it an ambiguous name is a 409 rather than a silent match against
- * every row, because both callers below act on credentials.
- */
 async function resolveInstall(
 	userId: string,
 	plugin: string,
@@ -187,15 +180,6 @@ export async function DELETE(
 	if (!resolved.ok) return resolved.response;
 	const { id, marketplace, siblings } = resolved.install;
 
-	// Disconnect before deleting: install_id is `set null` on delete, so the
-	// other order loses the only link saying which connections were this
-	// install's.
-	//
-	// Connections written before install_id existed carry none, and can only be
-	// attributed to this install when it is the user's single one of that name.
-	// With a sibling install present, an unattributed row is left alone rather
-	// than revoked on a guess — leaving a live credential is recoverable, and
-	// revoking the wrong one is not.
 	await db
 		.update(pluginConnections)
 		.set({ disconnectedAt: new Date(), disconnectReason: "plugin_uninstalled" })

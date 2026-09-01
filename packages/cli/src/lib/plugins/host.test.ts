@@ -136,8 +136,6 @@ describe("resolvePluginRef", () => {
 		});
 	});
 
-	// Silently preferring one is how a user asking for acme's plugin acts on
-	// superset's; there is no reading of this that is not a typo.
 	test("refuses two spellings that disagree", () => {
 		expect(() => resolvePluginRef("linear@acme", "superset")).toThrow(
 			/names marketplace "acme" but --marketplace says "superset"/,
@@ -170,9 +168,6 @@ describe("findInstalled", () => {
 		);
 	});
 
-	// The install's plugin.json decides which auth questions get asked and which
-	// manifest the credential is resolved against, so picking whichever record
-	// sorts first connects an account to a plugin the user did not name.
 	test("refuses rather than picks when a name spans marketplaces", () => {
 		expect(() => findInstalled(collision, "linear")).toThrow(
 			/installed from acme, superset/,

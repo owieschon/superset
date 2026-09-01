@@ -1,10 +1,8 @@
 export * from "./manifests.generated";
 
 export const DEFAULT_MARKETPLACE = "superset";
-// Temporary: the marketplace lives on the branch until it merges, because the
-// default branch has no .agent-marketplace.json yet. Drop the ref once it does.
 export const DEFAULT_MARKETPLACE_REPO = "superset-sh/superset";
-export const DEFAULT_MARKETPLACE_REF = "feat/plugins";
+export const DEFAULT_MARKETPLACE_REF = "main";
 /**
  * The curated plugin catalog the desktop Plugins page renders and installs
  * from. Static for the MVP — each entry is shaped as a pre-resolved plugin
