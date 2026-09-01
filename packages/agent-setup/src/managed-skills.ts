@@ -107,11 +107,12 @@ async function syncDir(
 		const source = path.join(src, file);
 		const target = path.join(dest, file);
 		fs.mkdirSync(path.dirname(target), { recursive: true });
-		const content = fs.readFileSync(source, "utf-8");
+		const content = fs.readFileSync(source);
 		// ASAR reads do not expose the archived executable bit, so a shebang is
 		// also authoritative for bundled scripts that must remain runnable.
 		const executable =
-			(fs.statSync(source).mode & 0o111) !== 0 || content.startsWith("#!");
+			(fs.statSync(source).mode & 0o111) !== 0 ||
+			(content[0] === 0x23 && content[1] === 0x21);
 		writeFileIfChanged(target, content, executable ? 0o755 : 0o644);
 	}
 	const wanted = new Set(sourceFiles.map((f) => path.join(dest, f)));
