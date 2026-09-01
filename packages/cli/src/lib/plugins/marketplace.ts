@@ -5,6 +5,23 @@ import { CLIError } from "@superset/cli-framework";
 export const MARKETPLACE_FILE = ".agent-marketplace.json";
 export const SUPERSET_EXTENSION = "superset";
 
+/**
+ * Names that are safe to join into a filesystem path. Marketplace-controlled
+ * values reach path.join, and path.join normalizes `..`, so an unvalidated
+ * version like "1.0.0/../../../.." escapes the cache root — which then gets
+ * rmSync'd recursively. Validate before joining, not after.
+ */
+const SAFE_SEGMENT = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
+export function assertSafeSegment(value: string, label: string): string {
+	if (!SAFE_SEGMENT.test(value) || value.includes("..")) {
+		throw new CLIError(
+			`Refusing to use ${label} "${value}": it must be alphanumeric with dots, dashes, or underscores, and cannot contain "..".`,
+		);
+	}
+	return value;
+}
+
 export interface MarketplaceEntry {
 	name: string;
 	description?: string;
@@ -181,7 +198,14 @@ export function resolvePlugin(
 	}
 
 	const dir = path.resolve(ctx.root, entry.source);
-	if (!dir.startsWith(`${ctx.root}${path.sep}`)) {
+	const realRoot = fs.existsSync(ctx.root)
+		? fs.realpathSync(ctx.root)
+		: ctx.root;
+	const realDir = fs.existsSync(dir) ? fs.realpathSync(dir) : dir;
+	if (
+		!dir.startsWith(`${ctx.root}${path.sep}`) ||
+		!realDir.startsWith(`${realRoot}${path.sep}`)
+	) {
 		throw new CLIError(
 			`Plugin "${entry.name}" resolves outside the marketplace root.`,
 		);
@@ -230,7 +254,11 @@ export function resolvePlugins(
 }
 
 export function versionDir(plugin: ResolvedPlugin, version: string): string {
-	return path.join(plugin.dir, "versions", version);
+	return path.join(
+		plugin.dir,
+		"versions",
+		assertSafeSegment(version, "version"),
+	);
 }
 
 export function publishedVersions(plugin: ResolvedPlugin): string[] {

@@ -115,6 +115,35 @@ export function resolveTemplate(value: string, scope: TemplateScope): string {
 	});
 }
 
+export function resolveUrlTemplate(
+	value: string,
+	scope: TemplateScope,
+	auth?: PluginAuthMethod,
+	what = "URL",
+): string {
+	const secrets = new Set(
+		(auth?.inputs ?? [])
+			.filter((input) => input.secret)
+			.map((input) => input.name),
+	);
+	return value.replace(TEMPLATE, (whole, root: string, key: string) => {
+		if (root === "config") {
+			throw new Error(
+				`${what} template expands \${config.${key}}, which is a credential; move it to a header or request body.`,
+			);
+		}
+		if (secrets.has(key)) {
+			throw new Error(
+				`${what} template expands \${inputs.${key}}, which the manifest declares secret; move it to a header or request body.`,
+			);
+		}
+		const resolved = scope.inputs?.[key];
+		return resolved === undefined || resolved === null
+			? whole
+			: String(resolved);
+	});
+}
+
 export function resolveTemplateDeep<T>(value: T, scope: TemplateScope): T {
 	if (typeof value === "string") {
 		return resolveTemplate(value, scope) as unknown as T;

@@ -6,8 +6,8 @@ import {
 	credentialFetch,
 	type PluginAuthMethod,
 	readPath,
-	resolveTemplate,
 	resolveTemplateDeep,
+	resolveUrlTemplate,
 	type TemplateScope,
 } from "./manifest";
 
@@ -95,7 +95,14 @@ export function buildAuthorizationUrl(
 		throw new Error(`Plugin "${pluginName}" declares no authorization_url.`);
 	}
 
-	const url = new URL(resolveTemplate(auth.authorization_url, scope));
+	const url = new URL(
+		resolveUrlTemplate(
+			auth.authorization_url,
+			scope,
+			auth,
+			"authorization_url",
+		),
+	);
 	url.searchParams.set("client_id", credentials.clientId);
 	url.searchParams.set("redirect_uri", redirectUri(pluginName));
 	url.searchParams.set("response_type", "code");
@@ -152,7 +159,7 @@ export async function exchangeCode(
 	}
 
 	const response = await credentialFetch(
-		resolveTemplate(auth.token_url, scope),
+		resolveUrlTemplate(auth.token_url, scope, auth, "token_url"),
 		{ method: "POST", headers, body },
 		"token_url",
 	);
@@ -211,13 +218,14 @@ export async function resolveIdentity(
 	identity: AuthIdentity | undefined,
 	scope: TemplateScope,
 	fallbackId: string,
+	auth?: PluginAuthMethod,
 ): Promise<ResolvedIdentity> {
 	if (!identity) return { id: fallbackId, label: null };
 
 	const method = identity.method ?? "GET";
 	const headers = resolveTemplateDeep(identity.headers ?? {}, scope);
 	const response = await credentialFetch(
-		resolveTemplate(identity.url, scope),
+		resolveUrlTemplate(identity.url, scope, auth, "identity.url"),
 		{
 			method,
 			headers,

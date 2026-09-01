@@ -4,13 +4,18 @@ import path from "node:path";
 import { installedPluginsFilePath } from "@superset/agent-setup";
 import { CLIError } from "@superset/cli-framework";
 import { getSupersetHomeDir } from "../settings/paths";
-import { MARKETPLACE_FILE, type Marketplace } from "./marketplace";
+import {
+	assertSafeSegment,
+	MARKETPLACE_FILE,
+	type Marketplace,
+} from "./marketplace";
 
 export {
 	DEFAULT_MARKETPLACE,
 	DEFAULT_MARKETPLACE_REF,
 	DEFAULT_MARKETPLACE_REPO,
 } from "@superset/shared/plugins";
+export { assertSafeSegment } from "./marketplace";
 
 export interface MarketplaceSource {
 	kind: "github" | "path";
@@ -136,23 +141,6 @@ export function marketplaceManifest(name: string): Marketplace {
 			`Could not parse ${file}: ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
-}
-
-/**
- * Names that are safe to join into a filesystem path. Marketplace-controlled
- * values reach path.join, and path.join normalizes `..`, so an unvalidated
- * version like "1.0.0/../../../.." escapes the cache root — which then gets
- * rmSync'd recursively. Validate before joining, not after.
- */
-const SAFE_SEGMENT = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
-
-export function assertSafeSegment(value: string, label: string): string {
-	if (!SAFE_SEGMENT.test(value) || value.includes("..")) {
-		throw new CLIError(
-			`Refusing to use ${label} "${value}": it must be alphanumeric with dots, dashes, or underscores, and cannot contain "..".`,
-		);
-	}
-	return value;
 }
 
 export function pluginCachePath(

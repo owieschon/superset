@@ -129,7 +129,7 @@ export async function upsertConnection(
 				installId: values.installId,
 				authMethod: values.authMethod,
 				accessToken: values.accessToken,
-				refreshToken: values.refreshToken,
+				...(values.refreshToken ? { refreshToken: values.refreshToken } : {}),
 				tokenExpiresAt: values.tokenExpiresAt,
 				scopes: values.scopes,
 				config: values.config,

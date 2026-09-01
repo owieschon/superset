@@ -152,7 +152,14 @@ export default command({
 			);
 		}
 
-		const params = new URLSearchParams({ ...provided, method: auth.type });
+		const params = new URLSearchParams({
+			...Object.fromEntries(
+				declared
+					.filter((input) => !input.secret && input.name in provided)
+					.map((input) => [input.name, provided[input.name] as string]),
+			),
+			method: auth.type,
+		});
 		const url = `${getApiUrl()}/api/plugins/${name}/connect?${params}`;
 
 		return {

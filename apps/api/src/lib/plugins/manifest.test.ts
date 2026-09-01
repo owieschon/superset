@@ -4,6 +4,7 @@ import {
 	readPath,
 	resolveTemplate,
 	resolveTemplateDeep,
+	resolveUrlTemplate,
 } from "./manifest";
 
 const scope = {
@@ -52,6 +53,41 @@ describe("resolveTemplate", () => {
 			headers: { Authorization: "Bearer tok_123" },
 			q: ["acme.atlassian.net"],
 		});
+	});
+});
+
+describe("resolveUrlTemplate", () => {
+	const auth = {
+		type: "api_key" as const,
+		inputs: [{ name: "site" }, { name: "api_key", secret: true }],
+	};
+	const withSecret = {
+		config: { access_token: "tok_123" },
+		inputs: { site: "acme.atlassian.net", api_key: "lin_api_secret" },
+	};
+
+	test("expands a non-secret input, which is what per-tenant hosts need", () => {
+		expect(
+			resolveUrlTemplate("https://${inputs.site}/mcp", withSecret, auth),
+		).toBe("https://acme.atlassian.net/mcp");
+	});
+
+	test("refuses to put the access token in a URL", () => {
+		expect(() =>
+			resolveUrlTemplate("https://x/?t=${config.access_token}", scope, auth),
+		).toThrow(/credential/);
+	});
+
+	test("refuses to put a secret input in a URL", () => {
+		expect(() =>
+			resolveUrlTemplate("https://x/?k=${inputs.api_key}", withSecret, auth),
+		).toThrow(/secret/);
+	});
+
+	test("a secret input is still expandable where no manifest declares it", () => {
+		expect(
+			resolveUrlTemplate("https://${inputs.site}/mcp", withSecret, undefined),
+		).toBe("https://acme.atlassian.net/mcp");
 	});
 });
 

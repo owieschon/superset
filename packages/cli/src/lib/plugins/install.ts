@@ -217,7 +217,11 @@ function sourceDir(marketplace: string, entry: MarketplaceEntry): string {
 	// The separator matters: without it "../foo-evil/payload" against root
 	// ".../foo" resolves to ".../foo-evil/payload", which string-prefixes the
 	// root and passes.
-	if (dir !== root && !dir.startsWith(`${root}${path.sep}`)) {
+	const contained = (a: string, b: string) =>
+		a === b || a.startsWith(`${b}${path.sep}`);
+	const realRoot = fs.existsSync(root) ? fs.realpathSync(root) : root;
+	const realDir = fs.existsSync(dir) ? fs.realpathSync(dir) : dir;
+	if (!contained(dir, root) || !contained(realDir, realRoot)) {
 		throw new CLIError(
 			`Plugin "${entry.name}" resolves outside its marketplace.`,
 		);
@@ -230,8 +234,13 @@ function copyTree(from: string, to: string): void {
 	for (const item of fs.readdirSync(from, { withFileTypes: true })) {
 		const src = path.join(from, item.name);
 		const dest = path.join(to, item.name);
+		if (item.isSymbolicLink()) {
+			throw new CLIError(
+				`Refusing to copy "${src}": a plugin cannot ship a symlink.`,
+			);
+		}
 		if (item.isDirectory()) copyTree(src, dest);
-		else fs.copyFileSync(src, dest);
+		else if (item.isFile()) fs.copyFileSync(src, dest);
 	}
 }
 

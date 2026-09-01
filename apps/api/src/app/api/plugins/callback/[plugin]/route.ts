@@ -76,6 +76,7 @@ export async function GET(
 			authSpec.identity,
 			{ config: { access_token: token.accessToken }, inputs: state.inputs },
 			authSpec.type,
+			authSpec,
 		);
 
 		await upsertConnection({

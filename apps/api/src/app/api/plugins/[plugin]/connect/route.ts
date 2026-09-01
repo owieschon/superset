@@ -63,6 +63,20 @@ export async function GET(
 		);
 	}
 
+	const secrets = (authSpec.inputs ?? []).filter((input) => input.secret);
+	if (secrets.length) {
+		return Response.json(
+			{
+				error: `Plugin "${plugin}" declares ${secrets
+					.map((input) => `"${input.name}"`)
+					.join(
+						", ",
+					)} as secret on its ${authSpec.type} method. A browser authorization URL cannot carry a secret.`,
+			},
+			{ status: 400 },
+		);
+	}
+
 	const inputs: Record<string, string> = {};
 	for (const input of authSpec.inputs ?? []) {
 		const value = url.searchParams.get(input.name);
@@ -182,6 +196,7 @@ export async function POST(
 			authSpec.identity,
 			{ config: { access_token: credential }, inputs },
 			authSpec.type,
+			authSpec,
 		);
 	} catch (error) {
 		return Response.json(
@@ -200,9 +215,12 @@ export async function POST(
 		authMethod: authSpec.type,
 		accessToken: credential,
 		inputs,
-		secretInputs: (authSpec.inputs ?? [])
-			.filter((input) => input.secret)
-			.map((input) => input.name),
+		secretInputs: [
+			credentialName,
+			...(authSpec.inputs ?? [])
+				.filter((input) => input.secret && input.name !== credentialName)
+				.map((input) => input.name),
+		],
 		externalAccountId: identity.id,
 		externalAccountLabel: identity.label,
 	});

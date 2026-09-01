@@ -7,8 +7,8 @@ import type { BundledSource } from "./connections";
 import {
 	credentialFetch,
 	type PluginManifest,
-	resolveTemplate,
 	resolveTemplateDeep,
+	resolveUrlTemplate,
 	supersetExtension,
 	type TemplateScope,
 } from "./manifest";
@@ -118,9 +118,10 @@ function remoteTarget(
 	// The method's own bind wins: two methods on one plugin can need different
 	// headers — Linear sends OAuth tokens as `Bearer <token>` and personal API
 	// keys raw, so using the wrong one fails authentication outright.
-	const methodBind = method
-		? extension?.auth?.find((entry) => entry.type === method)?.bind
+	const authMethod = method
+		? extension?.auth?.find((entry) => entry.type === method)
 		: undefined;
+	const methodBind = authMethod?.bind;
 
 	const headers: Record<string, string> = {
 		...resolveTemplateDeep(mcp.headers ?? {}, scope),
@@ -128,7 +129,10 @@ function remoteTarget(
 	};
 	// Resolved like the auth URLs are: a per-tenant server such as
 	// https://${inputs.site}/mcp would otherwise be fetched literally.
-	return { url: resolveTemplate(mcp.url, scope), headers };
+	return {
+		url: resolveUrlTemplate(mcp.url, scope, authMethod, "mcp.url"),
+		headers,
+	};
 }
 
 type BundledRun = (event: {
