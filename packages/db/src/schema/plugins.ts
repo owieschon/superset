@@ -130,8 +130,16 @@ export const pluginConnections = pgTable(
 	(table) => [
 		// Reconnecting the same account replaces the live row; a disconnected
 		// row stays for audit, so the index is partial rather than a constraint.
+		//
+		// Keyed on the install, not the plugin name: the same external account
+		// authorized against two marketplaces' copies of one name is two
+		// authorizations, and collapsing them onto a name lets the second
+		// connect overwrite the first's install_id and token — which is the
+		// misbinding install_id exists to prevent, arriving through the write
+		// path instead of the read path. Every live row has one, because both
+		// writers set it and an uninstall disconnects before clearing it.
 		uniqueIndex("plugin_connections_account_active_unique")
-			.on(table.userId, table.pluginName, table.externalAccountId)
+			.on(table.userId, table.installId, table.externalAccountId)
 			.where(sql`${table.disconnectedAt} IS NULL`),
 		index("plugin_connections_user_plugin_idx").on(
 			table.userId,

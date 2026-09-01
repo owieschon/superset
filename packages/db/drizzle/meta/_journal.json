@@ -729,6 +729,13 @@
       "when": 1788209866856,
       "tag": "0103_stage_page_assets",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1788289552186,
+      "tag": "0104_plugin_marketplace_installs_and_connections",
+      "breakpoints": true
     }
   ]
 }

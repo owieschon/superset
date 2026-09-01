@@ -108,7 +108,7 @@ export async function upsertConnection(
 		.onConflictDoUpdate({
 			target: [
 				pluginConnections.userId,
-				pluginConnections.pluginName,
+				pluginConnections.installId,
 				pluginConnections.externalAccountId,
 			],
 			targetWhere: isNull(pluginConnections.disconnectedAt),
