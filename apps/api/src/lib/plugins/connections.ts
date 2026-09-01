@@ -102,6 +102,26 @@ export async function upsertConnection(
 		externalAccountLabel: input.externalAccountLabel ?? null,
 	};
 
+	// The active-row index is keyed on install_id, and Postgres counts NULLs as
+	// distinct — so a live row that lost its install would not conflict, and
+	// reconnecting the same account would add a second live row rather than
+	// replace it. Uninstalling disconnects before it clears the link, but an
+	// organization delete cascades the install while leaving a connection whose
+	// own organization_id is null, which is the case that gets here. Retire
+	// those first so the insert below is the only live row for the account.
+	await db
+		.update(pluginConnections)
+		.set({ disconnectedAt: new Date(), disconnectReason: "install_removed" })
+		.where(
+			and(
+				eq(pluginConnections.userId, values.userId),
+				eq(pluginConnections.pluginName, values.pluginName),
+				eq(pluginConnections.externalAccountId, values.externalAccountId),
+				isNull(pluginConnections.installId),
+				isNull(pluginConnections.disconnectedAt),
+			),
+		);
+
 	const [row] = await db
 		.insert(pluginConnections)
 		.values(values)
