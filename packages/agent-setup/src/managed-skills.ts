@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { cp, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { writeFileIfChanged } from "./agent-wrappers-common";
@@ -92,12 +92,13 @@ function listFilesRecursive(root: string, relative = ""): string[] {
  * Mirrors src into dest file-by-file (writeFileIfChanged semantics), removing
  * previously-managed files that no longer exist in src. Files for which
  * `isExcluded` returns true are treated as absent from src — skipped on the
- * way in, and reaped on the way out if a prior sync already wrote them.
+ * way in, and reaped on the way out unless `isPreserved` protects them.
  */
 async function syncDir(
 	src: string,
 	dest: string,
 	isExcluded?: (relativePath: string) => boolean,
+	isPreserved?: (relativePath: string) => boolean,
 ): Promise<void> {
 	const sourceFiles = listFilesRecursive(src).filter(
 		(file) => !isExcluded?.(file),
@@ -106,19 +107,24 @@ async function syncDir(
 		const source = path.join(src, file);
 		const target = path.join(dest, file);
 		fs.mkdirSync(path.dirname(target), { recursive: true });
-		// Skills may bundle scripts/; keep them runnable after provisioning.
-		const executable = (fs.statSync(source).mode & 0o111) !== 0;
-		writeFileIfChanged(
-			target,
-			fs.readFileSync(source, "utf-8"),
-			executable ? 0o755 : 0o644,
-		);
+		const content = fs.readFileSync(source, "utf-8");
+		// ASAR reads do not expose the archived executable bit, so a shebang is
+		// also authoritative for bundled scripts that must remain runnable.
+		const executable =
+			(fs.statSync(source).mode & 0o111) !== 0 || content.startsWith("#!");
+		writeFileIfChanged(target, content, executable ? 0o755 : 0o644);
 	}
 	const wanted = new Set(sourceFiles.map((f) => path.join(dest, f)));
 	if (fs.existsSync(dest)) {
 		for (const file of listFilesRecursive(dest)) {
 			const absolute = path.join(dest, file);
-			if (file === MANAGED_SENTINEL_NAME || wanted.has(absolute)) continue;
+			if (
+				file === MANAGED_SENTINEL_NAME ||
+				wanted.has(absolute) ||
+				isPreserved?.(file)
+			) {
+				continue;
+			}
 			await rm(absolute);
 			let parent = path.dirname(absolute);
 			while (
@@ -195,19 +201,13 @@ function listBundledSkills(bundledPluginDir: string): string[] | null {
 	}
 }
 
-/** Copies a bundled skill's extra files (anything besides SKILL.md) verbatim. */
+/** Mirrors a bundled skill's extra files while preserving its rewritten SKILL.md. */
 async function copyBundledExtras(
 	sourceDir: string,
 	targetDir: string,
 ): Promise<void> {
-	for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
-		if (entry.name === "SKILL.md") continue;
-		await cp(
-			path.join(sourceDir, entry.name),
-			path.join(targetDir, entry.name),
-			{ recursive: true },
-		);
-	}
+	const isSkillDocument = (relativePath: string) => relativePath === "SKILL.md";
+	await syncDir(sourceDir, targetDir, isSkillDocument, isSkillDocument);
 }
 
 async function reapStaleSkillDirs(
