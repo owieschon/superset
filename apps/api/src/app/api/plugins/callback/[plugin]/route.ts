@@ -1,7 +1,7 @@
 import { auth } from "@superset/auth/server";
 import { env } from "@/env";
 import {
-	installedManifest,
+	installedPlugin,
 	manifestAuth,
 	upsertConnection,
 } from "@/lib/plugins/connections";
@@ -51,16 +51,16 @@ export async function GET(
 
 	// A name installed from two marketplaces cannot be resolved here: the
 	// callback knows the plugin, not which install started the flow.
-	let manifest: Awaited<ReturnType<typeof installedManifest>>;
+	let install: Awaited<ReturnType<typeof installedPlugin>>;
 	try {
-		manifest = await installedManifest(state.userId, plugin);
+		install = await installedPlugin(state.userId, plugin);
 	} catch {
 		return settingsRedirect(plugin, { error: "ambiguous_plugin" });
 	}
-	const authSpec = manifest
-		? authMethod(manifestAuth(manifest), state.authMethod)
+	const authSpec = install
+		? authMethod(manifestAuth(install.manifest), state.authMethod)
 		: null;
-	if (!manifest || !authSpec) {
+	if (!install || !authSpec) {
 		return settingsRedirect(plugin, { error: "not_installed" });
 	}
 
@@ -79,6 +79,7 @@ export async function GET(
 		);
 
 		await upsertConnection({
+			installId: install.id,
 			userId: state.userId,
 			organizationId: state.organizationId,
 			pluginName: plugin,

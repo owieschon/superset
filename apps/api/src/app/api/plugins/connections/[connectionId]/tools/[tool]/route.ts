@@ -2,7 +2,7 @@ import { auth } from "@superset/auth/server";
 import {
 	bundledSource,
 	getConnection,
-	installedPlugin,
+	installForConnection,
 	pluginErrorResponse,
 	templateScope,
 } from "@/lib/plugins/connections";
@@ -24,9 +24,9 @@ export async function POST(
 		return Response.json({ error: "Connection not found" }, { status: 404 });
 	}
 
-	let install: Awaited<ReturnType<typeof installedPlugin>>;
+	let install: Awaited<ReturnType<typeof installForConnection>>;
 	try {
-		install = await installedPlugin(session.user.id, connection.pluginName);
+		install = await installForConnection(session.user.id, connection);
 	} catch (error) {
 		const response = pluginErrorResponse(error);
 		if (!response) throw error;

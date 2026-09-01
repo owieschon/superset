@@ -1,6 +1,7 @@
 import { auth } from "@superset/auth/server";
 import {
 	installedManifest,
+	installedPlugin,
 	manifestAuth,
 	pluginErrorResponse,
 	upsertConnection,
@@ -122,22 +123,24 @@ export async function POST(
 	const organizationId =
 		new URL(request.url).searchParams.get("organizationId") ?? null;
 
-	let manifest: Awaited<ReturnType<typeof installedManifest>>;
+	// installedPlugin, not installedManifest: the connection records which
+	// install granted it, so dispatch never has to resolve by name again.
+	let install: Awaited<ReturnType<typeof installedPlugin>>;
 	try {
-		manifest = await installedManifest(session.user.id, plugin);
+		install = await installedPlugin(session.user.id, plugin);
 	} catch (error) {
 		const response = pluginErrorResponse(error);
 		if (!response) throw error;
 		return response;
 	}
-	if (!manifest) {
+	if (!install) {
 		return Response.json(
 			{ error: `Plugin "${plugin}" is not installed` },
 			{ status: 404 },
 		);
 	}
 
-	const authSpec = authMethod(manifestAuth(manifest), "api_key");
+	const authSpec = authMethod(manifestAuth(install.manifest), "api_key");
 	if (!authSpec) {
 		return Response.json(
 			{ error: `Plugin "${plugin}" does not use api_key auth` },
@@ -193,6 +196,7 @@ export async function POST(
 		userId: session.user.id,
 		organizationId,
 		pluginName: plugin,
+		installId: install.id,
 		authMethod: authSpec.type,
 		accessToken: credential,
 		inputs,

@@ -74,6 +74,14 @@ export type SelectPluginInstall = typeof pluginInstalls.$inferSelect;
  * generated uuid when the plugin declares none. It is part of the unique index
  * so one user can hold several connections to the same plugin — two Gmail
  * accounts — without a migration when that ships.
+ *
+ * `installId` names the install this token was granted against. Without it a
+ * connection identified its plugin by name alone, so a name carried by two
+ * marketplaces left dispatch to guess which manifest to resolve — and the
+ * manifest supplies the token_url and the proxy target, which is a credential
+ * bound to the wrong host. It is nullable and clears rather than cascades:
+ * uninstalling drops the install row, and a disconnected connection stays for
+ * audit. A null here means the install is gone, which dispatch already refuses.
  */
 export const pluginConnections = pgTable(
 	"plugin_connections",
@@ -87,6 +95,9 @@ export const pluginConnections = pgTable(
 			.references(() => users.id, { onDelete: "cascade" }),
 
 		pluginName: text("plugin_name").notNull(),
+		installId: uuid("install_id").references(() => pluginInstalls.id, {
+			onDelete: "set null",
+		}),
 		/**
 		 * Which declared auth method produced this token. A plugin can offer
 		 * several and they are not interchangeable — Linear sends OAuth tokens as
@@ -126,6 +137,7 @@ export const pluginConnections = pgTable(
 			table.userId,
 			table.pluginName,
 		),
+		index("plugin_connections_install_idx").on(table.installId),
 	],
 );
 

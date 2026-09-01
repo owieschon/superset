@@ -33,6 +33,8 @@ export interface UpsertConnectionInput {
 	userId: string;
 	organizationId: string | null;
 	pluginName: string;
+	/** The install this token is granted against; resolved by the caller. */
+	installId?: string | null;
 	authMethod: string;
 	accessToken: string;
 	refreshToken?: string | null;
@@ -89,6 +91,7 @@ export async function upsertConnection(
 		userId: input.userId,
 		organizationId: input.organizationId,
 		pluginName: input.pluginName,
+		installId: input.installId ?? null,
 		authMethod: input.authMethod,
 		accessToken: await encryptSecret(input.accessToken),
 		refreshToken: await encryptOptional(input.refreshToken),
@@ -110,6 +113,7 @@ export async function upsertConnection(
 			],
 			targetWhere: isNull(pluginConnections.disconnectedAt),
 			set: {
+				installId: values.installId,
 				authMethod: values.authMethod,
 				accessToken: values.accessToken,
 				refreshToken: values.refreshToken,
@@ -207,6 +211,7 @@ export async function templateScope(
  * take the first rather than letting the database choose.
  */
 export interface InstalledPlugin {
+	id: string;
 	manifest: PluginManifest;
 	marketplace: string;
 }
@@ -239,6 +244,7 @@ export async function installedPlugin(
 ): Promise<InstalledPlugin | null> {
 	const rows = await db
 		.select({
+			id: pluginInstalls.id,
 			manifest: pluginInstalls.manifest,
 			marketplace: pluginInstalls.marketplace,
 		})
@@ -264,9 +270,58 @@ export async function installedPlugin(
 	const row = rows[0];
 	if (!row) return null;
 	return {
+		id: row.id,
 		manifest: row.manifest as PluginManifest,
 		marketplace: row.marketplace,
 	};
+}
+
+/**
+ * The install a connection was granted against, by id.
+ *
+ * This is the path that cannot be ambiguous: the connection names one row, so
+ * no marketplace has to be guessed from a plugin name. Connections written
+ * before install_id existed have none, and fall back to resolving by name.
+ */
+export async function installById(
+	userId: string,
+	installId: string,
+): Promise<InstalledPlugin | null> {
+	const [row] = await db
+		.select({
+			id: pluginInstalls.id,
+			manifest: pluginInstalls.manifest,
+			marketplace: pluginInstalls.marketplace,
+		})
+		.from(pluginInstalls)
+		.where(
+			and(
+				eq(pluginInstalls.id, installId),
+				eq(pluginInstalls.userId, userId),
+				eq(pluginInstalls.enabled, true),
+			),
+		)
+		.limit(1);
+
+	if (!row) return null;
+	return {
+		id: row.id,
+		manifest: row.manifest as PluginManifest,
+		marketplace: row.marketplace,
+	};
+}
+
+/**
+ * The install backing a connection: by id where the connection records one,
+ * by name otherwise, which is where ambiguity can still arise.
+ */
+export async function installForConnection(
+	userId: string,
+	connection: Pick<SelectPluginConnection, "installId" | "pluginName">,
+): Promise<InstalledPlugin | null> {
+	return connection.installId
+		? await installById(userId, connection.installId)
+		: await installedPlugin(userId, connection.pluginName);
 }
 
 export async function installedManifest(
