@@ -12,13 +12,12 @@ import fs from "node:fs";
  */
 export function writeFileIfChanged(
 	filePath: string,
-	content: string,
+	content: string | Uint8Array,
 	mode: number,
 ): boolean {
-	const existing = fs.existsSync(filePath)
-		? fs.readFileSync(filePath, "utf-8")
-		: null;
-	if (existing === content) {
+	const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath) : null;
+	const next = Buffer.from(content);
+	if (existing?.equals(next)) {
 		try {
 			fs.chmodSync(filePath, mode);
 		} catch {
@@ -29,7 +28,7 @@ export function writeFileIfChanged(
 
 	const tmpPath = `${filePath}.${process.pid}.tmp`;
 	try {
-		fs.writeFileSync(tmpPath, content, { mode });
+		fs.writeFileSync(tmpPath, next, { mode });
 		fs.renameSync(tmpPath, filePath);
 	} catch (error) {
 		try {

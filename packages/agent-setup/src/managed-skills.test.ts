@@ -55,6 +55,10 @@ function seedBundledPlugin(): void {
 	);
 	mkdirSync(agentsExtra, { recursive: true });
 	writeFileSync(path.join(agentsExtra, "openai.yaml"), "model: test\n");
+	writeFileSync(
+		path.join(BUNDLED_PLUGIN, "skills", "orchestrate", "asset.bin"),
+		Buffer.from([0x00, 0x80, 0xff, 0x0a]),
+	);
 }
 
 async function run(disabledSkills?: readonly string[]): Promise<void> {
@@ -160,6 +164,11 @@ describe("createManagedSkills", () => {
 				),
 			),
 		).toBe(true);
+		expect(
+			readFileSync(
+				path.join(agentsSkills, "superset-orchestrate", "asset.bin"),
+			),
+		).toEqual(Buffer.from([0x00, 0x80, 0xff, 0x0a]));
 	});
 
 	it("mirrors packaged extras from the real bundled plugin on install and reprovision", async () => {

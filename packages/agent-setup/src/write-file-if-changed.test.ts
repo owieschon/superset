@@ -32,6 +32,16 @@ describe("writeFileIfChanged", () => {
 		expect(fs.statSync(target).mtimeMs).toBe(before);
 	});
 
+	it("preserves byte content", () => {
+		const target = path.join(TEST_DIR, "asset.bin");
+		const content = Buffer.from([0x00, 0x80, 0xff, 0x0a]);
+
+		expect(writeFileIfChanged(target, content, 0o644)).toBe(true);
+		expect(writeFileIfChanged(target, content, 0o644)).toBe(false);
+
+		expect(fs.readFileSync(target)).toEqual(content);
+	});
+
 	it("replaces changed content atomically via rename", () => {
 		const target = path.join(TEST_DIR, "rcfile");
 		writeFileIfChanged(target, "old", 0o644);
