@@ -108,6 +108,25 @@ describe("acquireSpawnLock", () => {
 		expect(readSpawnLock(ORG)?.ownerPid).toBe(process.pid);
 	});
 
+	test("a displaced handle cannot release its successor lock", () => {
+		const first = acquireSpawnLock(ORG, { staleMs: 30_000 });
+		expect(first).not.toBeNull();
+
+		const existing = readSpawnLock(ORG);
+		fs.writeFileSync(
+			lockFile(),
+			JSON.stringify({ ...existing, acquiredAt: Date.now() - 60_000 }),
+		);
+
+		const second = acquireSpawnLock(ORG, { staleMs: 30_000 });
+		expect(second).not.toBeNull();
+		first?.release();
+
+		expect(readSpawnLock(ORG)).not.toBeNull();
+		expect(acquireSpawnLock(ORG, { staleMs: 30_000 })).toBeNull();
+		second?.release();
+	});
+
 	test("steals a garbage/partial lock file", () => {
 		fs.mkdirSync(path.join(testRoot, ORG), { recursive: true });
 		fs.writeFileSync(lockFile(), "{ not valid json");

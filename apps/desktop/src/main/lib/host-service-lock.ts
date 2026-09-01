@@ -1,8 +1,11 @@
+import { randomUUID } from "node:crypto";
 import {
 	closeSync,
+	linkSync,
 	mkdirSync,
 	openSync,
 	readFileSync,
+	statSync,
 	unlinkSync,
 	writeSync,
 } from "node:fs";
@@ -25,6 +28,7 @@ export interface SpawnLock {
 	ownerPid: number;
 	machineId: string;
 	acquiredAt: number;
+	path?: string;
 }
 
 export interface SpawnLockHandle {
@@ -52,16 +56,17 @@ export function readSpawnLock(organizationId: string): SpawnLock | null {
 	}
 }
 
-function removeLock(organizationId: string): void {
+function removeLock(path: string): void {
 	try {
-		unlinkSync(lockPath(organizationId));
+		unlinkSync(path);
 	} catch {
 		// Already gone — fine.
 	}
 }
 
 function tryCreateLock(organizationId: string): SpawnLockHandle | null {
-	const path = lockPath(organizationId);
+	const canonicalPath = lockPath(organizationId);
+	const ownedPath = `${canonicalPath}.${randomUUID()}`;
 	try {
 		mkdirSync(manifestDir(organizationId), { recursive: true, mode: 0o700 });
 	} catch {
@@ -71,7 +76,7 @@ function tryCreateLock(organizationId: string): SpawnLockHandle | null {
 	let fd: number;
 	try {
 		// "wx" = O_CREAT | O_EXCL: atomic exclusive create on POSIX and Windows.
-		fd = openSync(path, "wx", 0o600);
+		fd = openSync(ownedPath, "wx", 0o600);
 	} catch {
 		return null;
 	}
@@ -81,8 +86,17 @@ function tryCreateLock(organizationId: string): SpawnLockHandle | null {
 			ownerPid: process.pid,
 			machineId: getHostId(),
 			acquiredAt: Date.now(),
+			path: ownedPath,
 		};
 		writeSync(fd, JSON.stringify(lock));
+		// The handle owns the unique path, so a stale takeover cannot redirect
+		// its release to a successor.
+		try {
+			linkSync(ownedPath, canonicalPath);
+		} catch {
+			removeLock(ownedPath);
+			return null;
+		}
 	} finally {
 		try {
 			// Best-effort close; the lock's existence, not the fd, is what matters.
@@ -92,7 +106,16 @@ function tryCreateLock(organizationId: string): SpawnLockHandle | null {
 
 	return {
 		release() {
-			removeLock(organizationId);
+			try {
+				// The inode check prevents a displaced handle from removing a
+				// successor. A replacement between stat and unlink remains a small
+				// filesystem TOCTOU boundary; the handle never needs that pathname
+				// for ownership, and its private path is always safe to remove.
+				if (statSync(canonicalPath).ino === statSync(ownedPath).ino) {
+					removeLock(canonicalPath);
+				}
+			} catch {}
+			removeLock(ownedPath);
 		},
 	};
 }
@@ -118,7 +141,10 @@ export function acquireSpawnLock(
 
 	if (!stealable) return null;
 
-	removeLock(organizationId);
+	removeLock(lockPath(organizationId));
+	if (existing?.path?.startsWith(`${lockPath(organizationId)}.`)) {
+		removeLock(existing.path);
+	}
 	// One retry after stealing; if a third party grabbed it first, back off.
 	return tryCreateLock(organizationId);
 }
