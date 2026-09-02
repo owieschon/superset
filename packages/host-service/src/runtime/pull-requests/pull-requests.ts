@@ -869,7 +869,8 @@ export class PullRequestRuntimeManager {
 			const rawMatch = keyToPullRequest.get(key);
 			// A PR the user unlinked stays unlinked; a different PR still links.
 			const match =
-				rawMatch?.id === workspace.suppressedPullRequestId
+				rawMatch?.id === workspace.suppressedPullRequestId ||
+				(rawMatch && this.isStaleDefaultBranchMatch(workspace, repo, rawMatch))
 					? undefined
 					: rawMatch;
 			if (match) {
@@ -995,6 +996,33 @@ export class PullRequestRuntimeManager {
 			workspace.upstreamRepo,
 			upstreamBranch,
 		);
+	}
+
+	// Guard (#7012): the per-head lookup is `state=all`, newest-updated first,
+	// so the base repo's own default-branch workspace is offered whichever
+	// head=<default> PR GitHub touched last — usually an old merged back-merge
+	// whose head commit the branch left behind long ago. For a finished
+	// (merged/closed) PR, branch-name equality is not evidence of ownership;
+	// only the workspace HEAD being that PR's head commit is. Open PRs are
+	// untouched: like every other branch, they link by name while local HEAD
+	// drifts. An unknown HEAD (fresh row, NULL until its first ref sync) fails
+	// the comparison, so nothing links until the sync that fills HEAD re-runs
+	// this refresh. `pullRequestHeadMatches` reads the PR row just upserted
+	// from the same GitHub node, so both SHAs come from the current fetch.
+	private isStaleDefaultBranchMatch(
+		workspace: typeof workspaces.$inferSelect,
+		repo: NormalizedRepoIdentity,
+		match: { id: string; state: PullRequestState },
+	): boolean {
+		if (match.state !== "merged" && match.state !== "closed") return false;
+		const isBaseDefaultBranchWorkspace =
+			repo.defaultBranch !== null &&
+			workspace.branch === repo.defaultBranch &&
+			(workspace.upstreamBranch ?? workspace.branch) === repo.defaultBranch &&
+			workspace.upstreamOwner?.toLowerCase() === repo.owner.toLowerCase() &&
+			workspace.upstreamRepo?.toLowerCase() === repo.name.toLowerCase();
+		if (!isBaseDefaultBranchWorkspace) return false;
+		return !this.pullRequestHeadMatches(match.id, workspace.headSha);
 	}
 
 	private findPullRequestRow(
@@ -1237,10 +1265,10 @@ export class PullRequestRuntimeManager {
 		wantedRefs: Map<string, GitHubPullRequestHeadRef>,
 		options: { bypassCache?: boolean } = {},
 	): Promise<{
-		matched: Map<string, { id: string }>;
+		matched: Map<string, { id: string; state: PullRequestState }>;
 		failedKeys: Set<string>;
 	}> {
-		const matched = new Map<string, { id: string }>();
+		const matched = new Map<string, { id: string; state: PullRequestState }>();
 		const failedKeys = new Set<string>();
 		if (wantedRefs.size === 0) return { matched, failedKeys };
 
@@ -1430,6 +1458,11 @@ export class PullRequestRuntimeManager {
 			const isInMergeQueue = mergeQueueByNumber.has(node.number)
 				? (mergeQueueByNumber.get(node.number) ?? false)
 				: coercePullRequestState(existing?.state ?? null) === "queued";
+			const state = mapPullRequestState(
+				node.state,
+				node.isDraft,
+				isInMergeQueue,
+			);
 			const rowId = this.upsertPullRequestRow({
 				existing,
 				projectId,
@@ -1437,7 +1470,7 @@ export class PullRequestRuntimeManager {
 				repo,
 				url: node.url,
 				title: node.title,
-				state: mapPullRequestState(node.state, node.isDraft, isInMergeQueue),
+				state,
 				isDraft: node.isDraft,
 				headBranch: node.headRefName,
 				headSha: node.headRefOid,
@@ -1449,7 +1482,7 @@ export class PullRequestRuntimeManager {
 				now,
 			});
 
-			matched.set(key, { id: rowId });
+			matched.set(key, { id: rowId, state });
 		}
 
 		return { matched, failedKeys };
