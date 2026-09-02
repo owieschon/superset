@@ -2,25 +2,35 @@ import { parsePullRequestDiff } from "./parse-pr-diff";
 import { extractTestingClaims, matchChangedFile } from "./testing-claims";
 import type {
 	ChangedFile,
+	CheckStatus,
 	DroppedInput,
 	EvidenceStatus,
 	PullRequestCheck,
 	PullRequestEvidence,
 	PullRequestEvidenceInput,
 	PullRequestEvidenceItem,
+	ReviewDecision,
 } from "./types";
 
-/** GitHub's CheckConclusionState, mapped to the outcome each one settles on. */
-const CHECK_CONCLUSIONS: Record<string, EvidenceStatus> = {
+/**
+ * What each normalized check status settles, or `null` for the ones that
+ * settle nothing.
+ *
+ * "pending" and "cancelled" produce no verdict: a cancelled run was stopped
+ * before it judged anything, so reporting it as evidence either way would be
+ * an invention. Both are dropped instead.
+ *
+ * This deliberately answers a different question from `computeChecksStatus`,
+ * which folds "cancelled" into failure because it is deciding whether the
+ * pull request's check gate is red. Nothing here computes an overall status;
+ * that gate stays the one place a verdict is formed.
+ */
+const CHECK_STATUS_EVIDENCE: Record<CheckStatus, EvidenceStatus | null> = {
 	success: "satisfied",
 	failure: "failed",
-	timed_out: "failed",
-	action_required: "failed",
-	startup_failure: "failed",
-	stale: "failed",
-	neutral: "neutral",
 	skipped: "neutral",
-	cancelled: "neutral",
+	pending: null,
+	cancelled: null,
 };
 
 const CHANGE_VERB: Record<ChangedFile["changeType"], string> = {
@@ -37,7 +47,7 @@ const CHANGE_VERB: Record<ChangedFile["changeType"], string> = {
  * Three rules hold everywhere in here:
  *
  * 1. Only settled facts become evidence. A check still running, a description
- *    line naming a file nobody touched, a conclusion the provider didn't send:
+ *    line naming a file nobody touched, a status the provider never settled:
  *    each lands in `dropped` with a reason instead of being guessed at.
  * 2. Human confirmation and machine-read facts stay in separate lists. A
  *    reviewer's approval is a person's decision, and it is never merged into,
@@ -45,6 +55,19 @@ const CHANGE_VERB: Record<ChangedFile["changeType"], string> = {
  * 3. Nothing here evaluates the code. There are no defect claims, no scores,
  *    and no judgment of whether the description is truthful — only whether a
  *    named file or check can be found in this pull request's own data.
+ *
+ * Ordering is positional and total: checks in the order the provider listed
+ * them, then changed test files in diff order, then claims in description
+ * order, so the same input always serializes byte-identically.
+ *
+ * Cost is one pass over the patch plus, for each testing claim, a scan of the
+ * settled checks and the changed files: O(P + C + F + K·(S·N + T·F)) for P
+ * patch lines, C checks, F changed files and K claims naming S code spans and
+ * T path tokens each. The K·T·F term dominates on a large diff, and only
+ * uncorroborated claims pay it in full. Measured on this implementation: 5,000
+ * changed files across 225,000 patch lines with 100 claims, none of which
+ * match, completes in ~50ms — so a diff far past the point where a provider
+ * would truncate it still costs well under a frame budget.
  */
 export function collectPullRequestEvidence(
 	input: PullRequestEvidenceInput,
@@ -64,7 +87,6 @@ export function collectPullRequestEvidence(
 
 interface SettledCheck {
 	name: string;
-	conclusion: string;
 	status: EvidenceStatus;
 }
 
@@ -86,25 +108,29 @@ function collectChecks(
 			continue;
 		}
 
-		if (check.status !== "completed" || typeof check.conclusion !== "string") {
-			dropped.push({
-				reason: "check-unsettled",
-				detail: `Check "${name}" has not concluded (status: ${formatValue(check.status)})`,
-			});
-			continue;
-		}
-
-		const status = CHECK_CONCLUSIONS[check.conclusion];
-		if (!status) {
+		// `parseChecksJson` rebuilds cached checks from a database column and
+		// only asserts that `status` is a string, so an unrecognized value is
+		// reachable here and is dropped rather than mapped to a default.
+		if (!(check.status in CHECK_STATUS_EVIDENCE)) {
 			dropped.push({
 				reason: "check-invalid",
-				detail: `Check "${name}" reported an unrecognized conclusion: ${check.conclusion}`,
+				detail: `Check "${name}" reported an unrecognized status: ${formatValue(check.status)}`,
 			});
 			continue;
 		}
 
-		// Matrix jobs legitimately repeat a name; the suffix keeps ids unique
-		// without renaming the first occurrence people already recognize.
+		const status = CHECK_STATUS_EVIDENCE[check.status];
+		if (status === null) {
+			dropped.push({
+				reason: "check-unsettled",
+				detail: `Check "${name}" has not produced a verdict (status: ${check.status})`,
+			});
+			continue;
+		}
+
+		// The live path dedupes matrix jobs by recency, but the cached
+		// `checksJson` path does not, so a repeated name is still reachable.
+		// The suffix keeps ids unique without renaming the first occurrence.
 		const seen = seenNames.get(name) ?? 0;
 		seenNames.set(name, seen + 1);
 
@@ -117,10 +143,10 @@ function collectChecks(
 			confirmation: "machine",
 			status,
 			label: name,
-			detail: `Check concluded: ${check.conclusion}`,
-			sourceRef: check.detailsUrl ?? undefined,
+			detail: `Check status: ${check.status}`,
+			sourceRef: check.url ?? undefined,
 		});
-		settled.push({ name, conclusion: check.conclusion, status });
+		settled.push({ name, status });
 	}
 
 	return settled;
@@ -167,7 +193,7 @@ function collectClaims(
 				confirmation: "machine",
 				status: check.status,
 				label: claim.text,
-				detail: `Claim names check "${check.name}", which concluded: ${check.conclusion}`,
+				detail: `Claim names check "${check.name}", whose status is settled`,
 				sourceRef: undefined,
 			});
 			continue;
@@ -196,7 +222,7 @@ function collectClaims(
 }
 
 function collectReviewDecision(
-	decision: string | null,
+	decision: ReviewDecision,
 	human: PullRequestEvidenceItem[],
 ): void {
 	if (decision !== "approved" && decision !== "changes_requested") return;

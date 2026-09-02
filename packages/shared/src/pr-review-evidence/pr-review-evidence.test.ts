@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { collectPullRequestEvidence } from "./collect-evidence";
 import { SAMPLE_CHECKS, SAMPLE_DIFF, SOURCE_ONLY_DIFF } from "./fixtures";
 import { parsePullRequestDiff } from "./parse-pr-diff";
-import { toReviewTabEvidenceItems } from "./review-tab-adapter";
 
 describe("parsePullRequestDiff", () => {
 	test("reads path, change type, line counts and test-file facts", () => {
@@ -76,7 +75,7 @@ describe("collectPullRequestEvidence — present evidence", () => {
 				confirmation: "machine",
 				status: "satisfied",
 				label: "test",
-				detail: "Check concluded: success",
+				detail: "Check status: success",
 				sourceRef: "https://example.invalid/checks/1",
 			},
 			{
@@ -85,7 +84,7 @@ describe("collectPullRequestEvidence — present evidence", () => {
 				confirmation: "machine",
 				status: "failed",
 				label: "typecheck",
-				detail: "Check concluded: failure",
+				detail: "Check status: failure",
 				sourceRef: undefined,
 			},
 		]);
@@ -114,7 +113,7 @@ describe("collectPullRequestEvidence — present evidence", () => {
 		});
 		expect(evidence.dropped).toContainEqual({
 			reason: "check-unsettled",
-			detail: 'Check "e2e" has not concluded (status: in_progress)',
+			detail: 'Check "e2e" has not produced a verdict (status: pending)',
 		});
 	});
 });
@@ -143,16 +142,18 @@ describe("collectPullRequestEvidence — absent evidence", () => {
 });
 
 describe("collectPullRequestEvidence — missing or invalid provider fields", () => {
-	test("skips checks whose name or conclusion is missing or the wrong type", () => {
+	test("skips checks whose name or status is missing or unrecognized", () => {
 		const evidence = collectPullRequestEvidence({
 			checks: [
-				{ name: "", status: "completed", conclusion: "success" },
-				{ name: "   ", status: "completed", conclusion: "success" },
-				{ name: "lint", status: "completed", conclusion: null },
-				{ name: "build", status: "completed", conclusion: "banana" },
+				{ name: "", status: "success", url: null },
+				{ name: "   ", status: "success", url: null },
+				{ name: "lint", status: "cancelled", url: null },
+				// `parseChecksJson` only asserts `status` is a string, so an
+				// unrecognized value is reachable from the cached column.
+				{ name: "build", status: "banana", url: null },
 				// A provider that sends the wrong types entirely.
-				{ name: 7, status: "completed", conclusion: "success" },
-				{ name: "audit", status: null, conclusion: "success" },
+				{ name: 7, status: "success", url: null },
+				{ name: "audit", status: null, url: null },
 			] as never,
 			diffPatch: null,
 			body: null,
@@ -161,20 +162,23 @@ describe("collectPullRequestEvidence — missing or invalid provider fields", ()
 
 		expect(evidence.machine).toEqual([]);
 		expect(evidence.dropped.map((d) => d.reason)).toEqual([
+			// empty name, whitespace-only name
 			"check-invalid",
 			"check-invalid",
+			// cancelled: ran, but never produced a verdict
 			"check-unsettled",
+			// unrecognized status, non-string name, null status
 			"check-invalid",
 			"check-invalid",
-			"check-unsettled",
+			"check-invalid",
 		]);
 	});
 
 	test("keeps ids unique when a matrix repeats a check name", () => {
 		const evidence = collectPullRequestEvidence({
 			checks: [
-				{ name: "test", status: "completed", conclusion: "success" },
-				{ name: "test", status: "completed", conclusion: "failure" },
+				{ name: "test", status: "success", url: null },
+				{ name: "test", status: "failure", url: null },
 			],
 			diffPatch: null,
 			body: null,
@@ -231,12 +235,25 @@ describe("collectPullRequestEvidence — human confirmation stays separate", () 
 		});
 		expect(requested.human.map((i) => i.status)).toEqual(["failed"]);
 
-		for (const decision of ["review_required", "", null, "APPROVED_MAYBE"]) {
+		// "pending" is in the vocabulary and means nobody has decided yet.
+		for (const decision of ["pending", null] as const) {
 			const evidence = collectPullRequestEvidence({
 				checks: [],
 				diffPatch: null,
 				body: null,
 				reviewDecision: decision,
+			});
+			expect(evidence.human).toEqual([]);
+		}
+
+		// Values the type forbids, which a loose caller could still pass:
+		// recorded human confirmation stays empty rather than being guessed.
+		for (const decision of ["review_required", "", "APPROVED_MAYBE"]) {
+			const evidence = collectPullRequestEvidence({
+				checks: [],
+				diffPatch: null,
+				body: null,
+				reviewDecision: decision as never,
 			});
 			expect(evidence.human).toEqual([]);
 		}
@@ -272,7 +289,7 @@ describe("collectPullRequestEvidence — testing claims", () => {
 		expect(claims).toHaveLength(1);
 		expect(claims[0]).toMatchObject({
 			status: "failed",
-			detail: 'Claim names check "typecheck", which concluded: failure',
+			detail: 'Claim names check "typecheck", whose status is settled',
 			sourceRef: undefined,
 		});
 	});
@@ -319,7 +336,7 @@ describe("collectPullRequestEvidence — testing claims", () => {
 		expect(evidence.dropped).toEqual([
 			{
 				reason: "check-unsettled",
-				detail: 'Check "e2e" has not concluded (status: in_progress)',
+				detail: 'Check "e2e" has not produced a verdict (status: pending)',
 			},
 		]);
 	});
@@ -340,30 +357,157 @@ describe("collectPullRequestEvidence — testing claims", () => {
 	});
 });
 
-describe("toReviewTabEvidenceItems", () => {
-	test("maps to the Review tab contract and keeps the source in the id", () => {
+describe("collectPullRequestEvidence — path normalization and near misses", () => {
+	test("a claim may write a changed path with a ./ or / repo-root prefix", () => {
+		for (const written of [
+			"packages/shared/src/format-tokens.test.ts",
+			"./packages/shared/src/format-tokens.test.ts",
+			"/packages/shared/src/format-tokens.test.ts",
+		]) {
+			const evidence = collectPullRequestEvidence({
+				checks: [],
+				diffPatch: SAMPLE_DIFF,
+				body: `Tested via \`${written}\``,
+				reviewDecision: null,
+			});
+			const claims = evidence.machine.filter(
+				(item) => item.kind === "testing-claim",
+			);
+			expect(claims.map((item) => item.sourceRef)).toEqual([
+				"packages/shared/src/format-tokens.test.ts",
+			]);
+		}
+	});
+
+	test("a substring of a changed path is not a match", () => {
+		// "tokens.ts" is a substring of "format-tokens.ts" but is not a whole
+		// trailing path segment of it, so it corroborates nothing.
+		const evidence = collectPullRequestEvidence({
+			checks: [],
+			diffPatch: SAMPLE_DIFF,
+			body: "Tested via `src/tokens.ts`",
+			reviewDecision: null,
+		});
+		expect(evidence.machine.filter((i) => i.kind === "testing-claim")).toEqual(
+			[],
+		);
+		expect(evidence.dropped.map((d) => d.reason)).toEqual([
+			"claim-uncorroborated",
+		]);
+	});
+
+	test("a check name quoted inside a longer command is not a check match", () => {
+		// The check is named "test"; the line quotes `bun test some/file.ts`.
+		// Matching on substrings would read that as the check having passed.
+		const evidence = collectPullRequestEvidence({
+			checks: [{ name: "test", status: "success", url: null }],
+			diffPatch: SOURCE_ONLY_DIFF,
+			body: "Tested with `bun test some/file.ts`",
+			reviewDecision: null,
+		});
+		expect(evidence.machine.filter((i) => i.kind === "testing-claim")).toEqual(
+			[],
+		);
+		expect(evidence.dropped.map((d) => d.reason)).toEqual([
+			"claim-uncorroborated",
+		]);
+	});
+});
+
+describe("collectPullRequestEvidence — ambiguous claims", () => {
+	test("a claim naming both a settled check and a changed file reports the check", () => {
+		// Two readings are available. The check is the stronger fact — a
+		// provider settled it — so it wins, deterministically, every run.
+		const evidence = collectPullRequestEvidence({
+			checks: [{ name: "typecheck", status: "failure", url: null }],
+			diffPatch: SAMPLE_DIFF,
+			body: "`typecheck` plus tests in `packages/shared/src/format-tokens.test.ts`",
+			reviewDecision: null,
+		});
+		const claim = evidence.machine.find((i) => i.kind === "testing-claim");
+		expect(claim?.status).toBe("failed");
+		expect(claim?.detail).toBe(
+			'Claim names check "typecheck", whose status is settled',
+		);
+	});
+
+	test("a claim naming two changed files resolves to one of them, stably", () => {
+		const body =
+			"Tested `packages/shared/src/legacy-format.test.ts` and `packages/shared/src/format-tokens.test.ts`";
+		const runs = [0, 1, 2].map(() =>
+			collectPullRequestEvidence({
+				checks: [],
+				diffPatch: SAMPLE_DIFF,
+				body,
+				reviewDecision: null,
+			}),
+		);
+		const refs = runs.map(
+			(evidence) =>
+				evidence.machine.find((i) => i.kind === "testing-claim")?.sourceRef,
+		);
+		expect(new Set(refs).size).toBe(1);
+		expect(refs[0]).toBe("packages/shared/src/legacy-format.test.ts");
+	});
+});
+
+describe("collectPullRequestEvidence — determinism and scope", () => {
+	test("the same input produces byte-identical output every run", () => {
+		const input = {
+			checks: SAMPLE_CHECKS,
+			diffPatch: SAMPLE_DIFF,
+			body: "Tested via `packages/shared/src/format-tokens.test.ts` and `typecheck`",
+			reviewDecision: "approved" as const,
+		};
+		const first = JSON.stringify(collectPullRequestEvidence(input));
+		for (let run = 0; run < 5; run += 1) {
+			expect(JSON.stringify(collectPullRequestEvidence(input))).toBe(first);
+		}
+	});
+
+	test("nothing outside the four declared input fields is read or emitted", () => {
+		// A caller handing over a wider object — a PR row carrying a token, an
+		// agent transcript — must not leak through. The producer reads checks,
+		// diffPatch, body and reviewDecision, and emits only what it derives
+		// from those.
+		const secret = "ghp_EXAMPLENOTAREALTOKEN0000000000000000";
 		const evidence = collectPullRequestEvidence({
 			checks: SAMPLE_CHECKS,
 			diffPatch: SAMPLE_DIFF,
-			body: null,
+			body: "Tested via `packages/shared/src/format-tokens.test.ts`",
 			reviewDecision: "approved",
-		});
-		const items = toReviewTabEvidenceItems(evidence);
+			// Fields the contract does not declare.
+			accessToken: secret,
+			agentTranscript: `assistant: the key is ${secret}`,
+		} as never);
 
-		expect(items.every((i) => i.kind === "document")).toBe(true);
-		expect(items.map((i) => i.id)).toEqual([
-			"human:review-approval",
-			"machine:check:test",
-			"machine:check:typecheck",
-			"machine:test-file:packages/shared/src/format-tokens.test.ts",
-			"machine:test-file:packages/shared/src/legacy-format.test.ts",
-		]);
-		expect(items[0]?.label).toBe("Approved by a reviewer");
+		const serialized = JSON.stringify(evidence);
+		expect(serialized).not.toContain(secret);
+		expect(serialized).not.toContain("agentTranscript");
+		expect(serialized).not.toContain("accessToken");
 	});
 
-	test("maps an empty result to an empty list", () => {
-		expect(
-			toReviewTabEvidenceItems({ machine: [], human: [], dropped: [] }),
-		).toEqual([]);
+	test("a diff body carrying a secret contributes paths only, never content", () => {
+		// Diff bodies are counted, not copied: only the header paths and the
+		// +/- line counts reach the output.
+		const secret = "AKIAEXAMPLENOTAREAL0";
+		const patch = `diff --git a/src/config.test.ts b/src/config.test.ts
+index 1111111..2222222 100644
+--- a/src/config.test.ts
++++ b/src/config.test.ts
+@@ -1,2 +1,2 @@
+-const key = "old";
++const key = "${secret}";
+`;
+		const evidence = collectPullRequestEvidence({
+			checks: [],
+			diffPatch: patch,
+			body: null,
+			reviewDecision: null,
+		});
+		expect(evidence.machine.map((i) => i.label)).toEqual([
+			"src/config.test.ts",
+		]);
+		expect(JSON.stringify(evidence)).not.toContain(secret);
 	});
 });

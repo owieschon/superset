@@ -36,7 +36,7 @@ export function extractTestingClaims(body: string | null): TestingClaim[] {
 			new Set(
 				[text, ...codeSpans]
 					.flatMap((source) => source.replace(/`/g, " ").split(/[\s,;()"']+/))
-					.map((token) => token.replace(/^[.,:;]+|[.,:;]+$/g, ""))
+					.map(normalizePathToken)
 					.filter(isPathShaped),
 			),
 		);
@@ -46,6 +46,20 @@ export function extractTestingClaims(body: string | null): TestingClaim[] {
 		claims.push({ text, codeSpans, pathTokens });
 	}
 	return claims;
+}
+
+/**
+ * Strips sentence punctuation, then the repo-root prefixes people write paths
+ * with — `./src/a.ts` and `/src/a.ts` name the same file as `src/a.ts`. Only
+ * these two leading forms are removed; nothing else about the path is
+ * rewritten, so a token still has to name a real changed path to corroborate
+ * anything.
+ */
+function normalizePathToken(token: string): string {
+	const trimmed = token.replace(/^[.,:;]+|[.,:;]+$/g, "");
+	if (trimmed.startsWith("./")) return trimmed.slice(2);
+	if (trimmed.startsWith("/")) return trimmed.slice(1);
+	return trimmed;
 }
 
 /** A token is path-shaped when it has a directory separator and an extension. */
