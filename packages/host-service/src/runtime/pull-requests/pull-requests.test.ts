@@ -187,14 +187,17 @@ function makePrNode(pr: {
 	headOwner?: string;
 	headRepo?: string;
 	title?: string;
+	// REST shape: a merged PR is `state: "closed"` with `merged_at` set.
+	state?: "open" | "closed" | "merged";
 }) {
+	const state = pr.state ?? "open";
 	return {
 		number: pr.number,
 		title: pr.title ?? `PR ${pr.number}`,
 		html_url: `https://github.com/${REPO.owner}/${REPO.name}/pull/${pr.number}`,
-		state: "open",
+		state: state === "open" ? "open" : "closed",
 		draft: false,
-		merged_at: null,
+		merged_at: state === "merged" ? "2026-05-01T12:00:00Z" : null,
 		updated_at: "2026-05-08T12:00:00Z",
 		head: {
 			ref: pr.headRef,
@@ -985,6 +988,145 @@ describe("default-branch guard", () => {
 
 		expect(getWorkspace(db, "ws-fork")?.pullRequestId).toBe(
 			getPrByNumber(db, 88)?.id,
+		);
+	});
+});
+
+// Issue #7012: the per-head lookup is `state=all`, newest-updated first, so a
+// workspace sitting on `main` keys on `<base>#main` and is handed whatever
+// head=main PR GitHub updated last — typically an old, merged back-merge
+// ("sync main into feat/x"). Branch-name equality is not enough evidence for
+// a finished PR: it only belongs to this workspace if the workspace HEAD is
+// the PR's head commit. Open PRs keep linking by branch, as every other
+// branch does (local HEAD legitimately drifts from an open PR's head).
+describe("default-branch stale PR guard", () => {
+	const seedMainWorkspace = (
+		db: HostDb,
+		w: { headSha: string | null; pullRequestId?: string },
+	) =>
+		seedWorkspace(db, {
+			id: "ws-main",
+			branch: "main",
+			headSha: w.headSha,
+			upstreamOwner: REPO.owner,
+			upstreamRepo: REPO.name,
+			upstreamBranch: "main",
+			pullRequestId: w.pullRequestId ?? null,
+		});
+
+	const staleBackMerge = (state: "merged" | "closed") =>
+		makePrNode({
+			number: 6900,
+			headRef: "main",
+			headSha: "back-merge-head-sha",
+			title: "chore: sync main into feat/signal-pages",
+			state,
+		});
+
+	for (const state of ["merged", "closed"] as const) {
+		test(`does not link a ${state} head=main PR whose head is not the workspace HEAD`, async () => {
+			const db = createRealDb();
+			seedProject(db);
+			seedMainWorkspace(db, { headSha: "current-main-sha" });
+			const manager = createManager(db, {
+				git: defaultBranchGit("main"),
+				execGh: routeGh({ main: staleBackMerge(state) }),
+			});
+
+			await manager.refreshPullRequestsByWorkspaces(["ws-main"]);
+
+			expect(getWorkspace(db, "ws-main")?.pullRequestId).toBeNull();
+			// Not linked, so it must not enter the workspace's PR history either.
+			const history = await manager.getPullRequestHistoryByWorkspaces([
+				"ws-main",
+			]);
+			expect(history[0]?.pullRequests).toEqual([]);
+		});
+	}
+
+	// The reported loop: the row is already (wrongly) linked, "Remove PR Link"
+	// is not involved, and the next sweep must clear it rather than re-assert.
+	test("clears an already-linked stale merged head=main PR on the next sweep", async () => {
+		const db = createRealDb();
+		seedProject(db);
+		seedPullRequest(db, {
+			id: "pr-back-merge",
+			prNumber: 6900,
+			headBranch: "main",
+			headSha: "back-merge-head-sha",
+			state: "merged",
+		});
+		seedMainWorkspace(db, {
+			headSha: "current-main-sha",
+			pullRequestId: "pr-back-merge",
+		});
+		const manager = createManager(db, {
+			git: defaultBranchGit("main"),
+			execGh: routeGh({ main: staleBackMerge("merged") }),
+		});
+
+		await manager.refreshPullRequestsByWorkspaces(["ws-main"]);
+
+		expect(getWorkspace(db, "ws-main")?.pullRequestId).toBeNull();
+	});
+
+	// A fresh row has no HEAD yet (NULL until the first ref sync). With nothing
+	// to compare against, a finished PR is not linked — the sync that fills
+	// HEAD re-runs the refresh, so a genuine match links moments later.
+	test("does not link a merged head=main PR while the workspace HEAD is unknown", async () => {
+		const db = createRealDb();
+		seedProject(db);
+		seedMainWorkspace(db, { headSha: null });
+		const manager = createManager(db, {
+			git: defaultBranchGit("main"),
+			execGh: routeGh({ main: staleBackMerge("merged") }),
+		});
+
+		await manager.refreshPullRequestsByWorkspaces(["ws-main"]);
+
+		expect(getWorkspace(db, "ws-main")?.pullRequestId).toBeNull();
+	});
+
+	// Exact head-commit equality is the authority: a workspace parked on the
+	// merged PR's tip is that PR's workspace, same rule as no-upstream checkouts.
+	test("still links a merged head=main PR whose head is the workspace HEAD", async () => {
+		const db = createRealDb();
+		seedProject(db);
+		seedMainWorkspace(db, { headSha: "back-merge-head-sha" });
+		const manager = createManager(db, {
+			git: defaultBranchGit("main"),
+			execGh: routeGh({ main: staleBackMerge("merged") }),
+		});
+
+		await manager.refreshPullRequestsByWorkspaces(["ws-main"]);
+
+		expect(getWorkspace(db, "ws-main")?.pullRequestId).toBe(
+			getPrByNumber(db, 6900)?.id,
+		);
+	});
+
+	// Unchanged behaviour: an open head=main PR links by branch even when the
+	// local HEAD has moved past (or behind) the PR head.
+	test("still links an open head=main PR whose head differs from the workspace HEAD", async () => {
+		const db = createRealDb();
+		seedProject(db);
+		seedMainWorkspace(db, { headSha: "current-main-sha" });
+		const manager = createManager(db, {
+			git: defaultBranchGit("main"),
+			execGh: routeGh({
+				main: makePrNode({
+					number: 6901,
+					headRef: "main",
+					headSha: "open-pr-head-sha",
+					title: "Release main into production",
+				}),
+			}),
+		});
+
+		await manager.refreshPullRequestsByWorkspaces(["ws-main"]);
+
+		expect(getWorkspace(db, "ws-main")?.pullRequestId).toBe(
+			getPrByNumber(db, 6901)?.id,
 		);
 	});
 });
