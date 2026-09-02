@@ -70,6 +70,7 @@ describe("GitHub pull request REST queries", () => {
 			headRepositoryOwner: { login: "superset-sh" },
 			headRepository: { name: "superset" },
 			updatedAt: "2026-05-08T12:00:00Z",
+			mergedAt: null,
 		});
 		expect(calls).toEqual([
 			{
@@ -91,6 +92,78 @@ describe("GitHub pull request REST queries", () => {
 				],
 			},
 		]);
+	});
+
+	// GitHub's merged_at is the authoritative merge time; the runtime persists
+	// it instead of stamping the sweep that first noticed the merge.
+	test("carries GitHub's merged_at as epoch ms on merged PRs", async () => {
+		const { execGh } = createExecGh([
+			[
+				{
+					number: 42,
+					title: "Merged earlier",
+					html_url: "https://github.com/superset-sh/superset/pull/42",
+					state: "closed",
+					draft: false,
+					merged_at: "2026-05-01T10:00:00Z",
+					updated_at: "2026-05-01T10:00:00Z",
+					head: {
+						ref: "fix/sidebar",
+						sha: "abc123",
+						repo: {
+							name: "superset",
+							owner: { login: "superset-sh" },
+						},
+					},
+					base: { repo: { full_name: "superset-sh/superset" } },
+				},
+			],
+		]);
+
+		const result = await fetchPullRequestByHeadFromGh(
+			execGh,
+			{ owner: "superset-sh", name: "superset" },
+			{ owner: "superset-sh", repo: "superset", branch: "fix/sidebar" },
+		);
+
+		expect(result?.state).toBe("MERGED");
+		expect(result?.mergedAt).toBe(Date.parse("2026-05-01T10:00:00Z"));
+	});
+
+	// GitHub reports merged via a non-null merged_at, so an unparseable value
+	// still means merged; only the timestamp is unknown.
+	test("drops an unparseable merged_at but keeps the merged state", async () => {
+		const { execGh } = createExecGh([
+			[
+				{
+					number: 42,
+					title: "Merged, bad clock",
+					html_url: "https://github.com/superset-sh/superset/pull/42",
+					state: "closed",
+					draft: false,
+					merged_at: "not-a-date",
+					updated_at: "2026-05-01T10:00:00Z",
+					head: {
+						ref: "fix/sidebar",
+						sha: "abc123",
+						repo: {
+							name: "superset",
+							owner: { login: "superset-sh" },
+						},
+					},
+					base: { repo: { full_name: "superset-sh/superset" } },
+				},
+			],
+		]);
+
+		const result = await fetchPullRequestByHeadFromGh(
+			execGh,
+			{ owner: "superset-sh", name: "superset" },
+			{ owner: "superset-sh", repo: "superset", branch: "fix/sidebar" },
+		);
+
+		expect(result?.state).toBe("MERGED");
+		expect(result?.mergedAt).toBeNull();
 	});
 
 	test("filters REST head candidates by exact upstream repository", async () => {

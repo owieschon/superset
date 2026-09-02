@@ -54,6 +54,15 @@ function normalizePullRequestState(
 	return state.toLowerCase() === "closed" ? "CLOSED" : "OPEN";
 }
 
+// GitHub's merged_at is the authoritative merge time. A non-null value means
+// merged even when it fails to parse; the state keeps that meaning and only
+// the timestamp is dropped.
+export function parseMergedAt(mergedAt: string | null): number | null {
+	if (!mergedAt) return null;
+	const parsed = Date.parse(mergedAt);
+	return Number.isNaN(parsed) ? null : parsed;
+}
+
 function normalizePullRequest(raw: unknown): GitHubPullRequestNode | null {
 	if (!isRecord(raw) || !isRecord(raw.head)) return null;
 	const headRepo = isRecord(raw.head.repo) ? raw.head.repo : null;
@@ -85,15 +94,13 @@ function normalizePullRequest(raw: unknown): GitHubPullRequestNode | null {
 	const headFullName = repoName
 		? `${ownerLogin}/${repoName}`.toLowerCase()
 		: null;
+	const mergedAt = typeof raw.merged_at === "string" ? raw.merged_at : null;
 
 	return {
 		number: raw.number,
 		title: raw.title,
 		url: raw.html_url,
-		state: normalizePullRequestState(
-			raw.state,
-			typeof raw.merged_at === "string" ? raw.merged_at : null,
-		),
+		state: normalizePullRequestState(raw.state, mergedAt),
 		isDraft: raw.draft === true,
 		headRefName: raw.head.ref,
 		headRefOid: raw.head.sha,
@@ -105,6 +112,7 @@ function normalizePullRequest(raw: unknown): GitHubPullRequestNode | null {
 			typeof raw.updated_at === "string"
 				? raw.updated_at
 				: new Date(0).toISOString(),
+		mergedAt: parseMergedAt(mergedAt),
 	};
 }
 
