@@ -9,7 +9,8 @@ import { getBundledPluginDir } from "./config";
  * since these ship to every agent a user runs through Superset.
  */
 
-const SKILLS_DIR = path.join(getBundledPluginDir(), "skills");
+const PLUGIN_DIR = getBundledPluginDir();
+const SKILLS_DIR = path.join(PLUGIN_DIR, "skills");
 const SPEC_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const SPEC_KEYS = new Set([
 	"name",
@@ -49,6 +50,38 @@ function parseSkill(content: string): ParsedSkill {
 const skillDirs = readdirSync(SKILLS_DIR).filter((name) =>
 	statSync(path.join(SKILLS_DIR, name)).isDirectory(),
 );
+
+function listFilesRecursive(root: string, relative = ""): string[] {
+	const files: string[] = [];
+	for (const entry of readdirSync(path.join(root, relative), {
+		withFileTypes: true,
+	})) {
+		const entryRelative = path.join(relative, entry.name);
+		if (entry.isDirectory()) {
+			files.push(...listFilesRecursive(root, entryRelative));
+		} else if (entry.isFile()) {
+			files.push(entryRelative);
+		}
+	}
+	return files;
+}
+
+describe("bundled plugin files", () => {
+	it("gives every executable a shebang", () => {
+		// Packaged builds read these through Electron's ASAR shim, which reports
+		// mode 0644 for every archived file. Provisioning restores the executable
+		// bit from the leading "#!", so an executable without one would land
+		// unrunnable in ~/.agents/skills.
+		for (const file of listFilesRecursive(PLUGIN_DIR)) {
+			const absolute = path.join(PLUGIN_DIR, file);
+			if ((statSync(absolute).mode & 0o111) === 0) continue;
+			expect(
+				readFileSync(absolute).subarray(0, 2).toString("utf-8"),
+				`${file} is executable but has no shebang`,
+			).toBe("#!");
+		}
+	});
+});
 
 describe("bundled plugin skills", () => {
 	it("finds the bundled skills", () => {

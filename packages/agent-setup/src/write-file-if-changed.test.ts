@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { writeFileIfChanged } from "./write-file-if-changed";
+import {
+	isPendingWritePath,
+	pendingWritePath,
+	writeFileIfChanged,
+} from "./write-file-if-changed";
 
 const TEST_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "superset-wfic-"));
 
@@ -50,6 +54,12 @@ describe("writeFileIfChanged", () => {
 
 		expect(fs.readFileSync(target, "utf-8")).toBe("new");
 		expect(fs.readdirSync(TEST_DIR)).toEqual(["rcfile"]);
+	});
+
+	it("recognizes its own staged path so reapers can skip it", () => {
+		expect(isPendingWritePath(pendingWritePath("/skills/audit.sh"))).toBe(true);
+		expect(isPendingWritePath("audit.sh")).toBe(false);
+		expect(isPendingWritePath("notes.tmp")).toBe(false);
 	});
 
 	it("cleans up the temp file when the write fails", () => {

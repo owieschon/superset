@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { writeFileIfChanged } from "./agent-wrappers-common";
 import { getBundledPluginDir } from "./config";
+import { isPendingWritePath } from "./write-file-if-changed";
 
 export const MANAGED_SKILL_MARKER = "<!-- superset-managed-skill v1 -->";
 
@@ -122,18 +123,22 @@ async function syncDir(
 			if (
 				file === MANAGED_SENTINEL_NAME ||
 				wanted.has(absolute) ||
-				isPreserved?.(file)
+				isPreserved?.(file) ||
+				// Another provisioner may be staging a write here right now.
+				isPendingWritePath(file)
 			) {
 				continue;
 			}
-			await rm(absolute);
+			// `force` because that same other provisioner reaps the same set:
+			// whichever loses the race must not fail the rest of the sync.
+			await rm(absolute, { force: true });
 			let parent = path.dirname(absolute);
 			while (
 				parent !== dest &&
 				fs.existsSync(parent) &&
 				fs.readdirSync(parent).length === 0
 			) {
-				await rm(parent, { recursive: true });
+				await rm(parent, { recursive: true, force: true });
 				parent = path.dirname(parent);
 			}
 		}
