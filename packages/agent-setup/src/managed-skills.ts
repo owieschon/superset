@@ -1,10 +1,11 @@
 import fs from "node:fs";
-import { cp, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { writeFileIfChanged } from "./agent-wrappers-common";
 import { getBundledPluginDir } from "./config";
 import { readInstalledPluginSources } from "./installed-plugins";
+import { isPendingWritePath } from "./write-file-if-changed";
 
 export const MANAGED_SKILL_MARKER = "<!-- superset-managed-skill v1 -->";
 
@@ -55,7 +56,7 @@ interface ResolvedSource {
 interface ExtraTree {
 	destRelative: string;
 	src: string;
-	transform?: (relativePath: string, contents: string) => string;
+	transform?: (relativePath: string, contents: Buffer) => string | Uint8Array;
 }
 
 export interface ManagedSkillsOptions {
@@ -188,10 +189,13 @@ async function syncDir(
 	extraTrees: readonly ExtraTree[] = [],
 	isPreserved?: (relativePath: string) => boolean,
 ): Promise<void> {
-	const copies: { source: string; relative: string; contents?: string }[] =
-		listFilesRecursive(src)
-			.filter((file) => !isExcluded?.(file))
-			.map((file) => ({ source: path.join(src, file), relative: file }));
+	const copies: {
+		source: string;
+		relative: string;
+		contents?: string | Uint8Array;
+	}[] = listFilesRecursive(src)
+		.filter((file) => !isExcluded?.(file))
+		.map((file) => ({ source: path.join(src, file), relative: file }));
 
 	for (const tree of extraTrees) {
 		for (const file of listFilesRecursive(tree.src)) {
@@ -199,7 +203,7 @@ async function syncDir(
 			copies.push({
 				source,
 				relative: path.join(tree.destRelative, file),
-				contents: tree.transform?.(file, fs.readFileSync(source, "utf-8")),
+				contents: tree.transform?.(file, fs.readFileSync(source)),
 			});
 		}
 	}
@@ -207,13 +211,14 @@ async function syncDir(
 	for (const { source, relative, contents } of copies) {
 		const target = path.join(dest, relative);
 		fs.mkdirSync(path.dirname(target), { recursive: true });
+		const bytes = contents ?? fs.readFileSync(source);
 		// Skills may bundle scripts/; keep them runnable after provisioning.
-		const executable = (fs.statSync(source).mode & 0o111) !== 0;
-		writeFileIfChanged(
-			target,
-			contents ?? fs.readFileSync(source, "utf-8"),
-			executable ? 0o755 : 0o644,
-		);
+		// ASAR reads do not expose the archived executable bit, so a shebang is
+		// also authoritative for bundled scripts that must remain runnable.
+		const executable =
+			(fs.statSync(source).mode & 0o111) !== 0 ||
+			(bytes[0] === 0x23 && bytes[1] === 0x21);
+		writeFileIfChanged(target, bytes, executable ? 0o755 : 0o644);
 	}
 	const wanted = new Set(copies.map((c) => path.join(dest, c.relative)));
 	if (fs.existsSync(dest)) {
@@ -221,14 +226,18 @@ async function syncDir(
 			const absolute = path.join(dest, file);
 			if (file === MANAGED_SENTINEL_NAME || wanted.has(absolute)) continue;
 			if (isPreserved?.(file)) continue;
-			await rm(absolute);
+			// Another provisioner may be staging a write here right now.
+			if (isPendingWritePath(file)) continue;
+			// `force` because that same other provisioner reaps the same set:
+			// whichever loses the race must not fail the rest of the sync.
+			await rm(absolute, { force: true });
 			let parent = path.dirname(absolute);
 			while (
 				parent !== dest &&
 				fs.existsSync(parent) &&
 				fs.readdirSync(parent).length === 0
 			) {
-				await rm(parent, { recursive: true });
+				await rm(parent, { recursive: true, force: true });
 				parent = path.dirname(parent);
 			}
 		}
@@ -258,7 +267,7 @@ function claudeSkillTrees(
 				// directory, and the prefix changed that directory's name.
 				transform: (relativePath, contents) =>
 					relativePath === "SKILL.md"
-						? setFrontmatterName(contents, dirName)
+						? setFrontmatterName(contents.toString("utf-8"), dirName)
 						: contents,
 			});
 		}
@@ -361,19 +370,13 @@ function listSourceSkills(sourceDir: string): string[] | null {
 	}
 }
 
-/** Copies a bundled skill's extra files (anything besides SKILL.md) verbatim. */
+/** Mirrors a bundled skill's extra files while preserving its rewritten SKILL.md. */
 async function copyBundledExtras(
 	sourceDir: string,
 	targetDir: string,
 ): Promise<void> {
-	for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
-		if (entry.name === "SKILL.md") continue;
-		await cp(
-			path.join(sourceDir, entry.name),
-			path.join(targetDir, entry.name),
-			{ recursive: true },
-		);
-	}
+	const isSkillDocument = (relativePath: string) => relativePath === "SKILL.md";
+	await syncDir(sourceDir, targetDir, isSkillDocument, [], isSkillDocument);
 }
 
 /** Directories under `root` that this source provisioned on an earlier run. */

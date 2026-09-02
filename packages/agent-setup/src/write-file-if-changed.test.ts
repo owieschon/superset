@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { writeFileIfChanged } from "./write-file-if-changed";
+import {
+	isPendingWritePath,
+	pendingWritePath,
+	writeFileIfChanged,
+} from "./write-file-if-changed";
 
 const TEST_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "superset-wfic-"));
 
@@ -30,6 +34,22 @@ describe("writeFileIfChanged", () => {
 		expect(writeFileIfChanged(target, "{}", 0o644)).toBe(false);
 
 		expect(fs.statSync(target).mtimeMs).toBe(before);
+	});
+
+	it("preserves byte content", () => {
+		const target = path.join(TEST_DIR, "asset.bin");
+		const content = Buffer.from([0x00, 0x80, 0xff, 0x0a]);
+
+		expect(writeFileIfChanged(target, content, 0o644)).toBe(true);
+		expect(writeFileIfChanged(target, content, 0o644)).toBe(false);
+
+		expect(fs.readFileSync(target)).toEqual(content);
+	});
+
+	it("recognizes its own staged path so reapers can skip it", () => {
+		expect(isPendingWritePath(pendingWritePath("/skills/audit.sh"))).toBe(true);
+		expect(isPendingWritePath("audit.sh")).toBe(false);
+		expect(isPendingWritePath("notes.tmp")).toBe(false);
 	});
 
 	it("replaces changed content atomically via rename", () => {
