@@ -222,6 +222,22 @@ describe("createManagedSkills", () => {
 		expect(existsSync(auditScript)).toBe(true);
 	});
 
+	it("leaves another provisioner's staged write alone while reaping stale files", async () => {
+		await run();
+		const agentsDir = path.join(agentsSkills, "superset-orchestrate", "agents");
+		// A second provisioner on this machine (a CLI host-service alongside the
+		// desktop) stages its replacement under a pid that is not ours.
+		const staged = path.join(agentsDir, `openai.yaml.${process.pid + 1}.tmp`);
+		writeFileSync(staged, "model: staged\n");
+		const stale = path.join(agentsDir, "gemini.yaml");
+		writeFileSync(stale, "model: stale\n");
+
+		await run();
+
+		expect(existsSync(staged)).toBe(true);
+		expect(existsSync(stale)).toBe(false);
+	});
+
 	it("provisions in-app commands for feedback and 10x only", async () => {
 		await run();
 
