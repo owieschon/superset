@@ -53,12 +53,7 @@ index 1111111..2222222 100644
 `;
 
 export const SAMPLE_CHECKS: PullRequestCheck[] = [
-	{
-		name: "test",
-		status: "completed",
-		conclusion: "success",
-		detailsUrl: "https://example.invalid/checks/1",
-	},
-	{ name: "typecheck", status: "completed", conclusion: "failure" },
-	{ name: "e2e", status: "in_progress", conclusion: null },
+	{ name: "test", status: "success", url: "https://example.invalid/checks/1" },
+	{ name: "typecheck", status: "failure", url: null },
+	{ name: "e2e", status: "pending", url: null },
 ];

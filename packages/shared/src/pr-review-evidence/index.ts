@@ -1,13 +1,9 @@
 export { collectPullRequestEvidence } from "./collect-evidence";
 export { isTestFilePath, parsePullRequestDiff } from "./parse-pr-diff";
-export {
-	type ReviewTabEvidenceItem,
-	type ReviewTabEvidenceKind,
-	toReviewTabEvidenceItems,
-} from "./review-tab-adapter";
 export type {
 	ChangedFile,
 	ChangeType,
+	CheckStatus,
 	DroppedInput,
 	EvidenceConfirmation,
 	EvidenceKind,
@@ -16,4 +12,5 @@ export type {
 	PullRequestEvidence,
 	PullRequestEvidenceInput,
 	PullRequestEvidenceItem,
+	ReviewDecision,
 } from "./types";
