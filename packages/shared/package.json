@@ -180,6 +180,10 @@
 			"types": "./src/page-content-types.ts",
 			"default": "./src/page-content-types.ts"
 		},
+		"./pr-review-evidence": {
+			"types": "./src/pr-review-evidence/index.ts",
+			"default": "./src/pr-review-evidence/index.ts"
+		},
 		"./page-slug": {
 			"types": "./src/page-slug.ts",
 			"default": "./src/page-slug.ts"
