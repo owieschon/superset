@@ -109,6 +109,29 @@ export function markTerminalAgentBindingEnded(
 	return { workspaceId: row.workspaceId };
 }
 
+/**
+ * The terminal's binding row regardless of end state. Live reads hide ended
+ * rows by design; this is for introspection, where "the session ended, and
+ * here is why" is part of the answer.
+ */
+export function getTerminalAgentBindingAnyState(
+	db: HostDb,
+	workspaceId: string,
+	terminalId: string,
+): TerminalAgentBinding | undefined {
+	const row = db
+		.select(bindingColumns)
+		.from(terminalAgentBindings)
+		.where(
+			and(
+				eq(terminalAgentBindings.terminalId, terminalId),
+				eq(terminalAgentBindings.workspaceId, workspaceId),
+			),
+		)
+		.get();
+	return row ? rowToBinding(row) : undefined;
+}
+
 /** The agent session id a terminal's binding currently points at, if any. */
 export function getTerminalAgentBindingSessionId(
 	db: HostDb,

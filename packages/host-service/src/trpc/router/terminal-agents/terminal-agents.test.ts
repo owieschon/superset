@@ -18,6 +18,7 @@ import {
 import { findResumeCandidateBinding } from "../../../terminal-agents/persistence";
 import type { AgentRunResult } from "../agents/agents";
 import {
+	explainTerminalAgentBinding,
 	listAccountRestartCandidates,
 	type RestartAccountSessionsDeps,
 	type ResumeSessionDeps,
@@ -401,5 +402,162 @@ describe("restartAccountSessions", () => {
 		expect(result).toEqual({ restartedTerminalIds: [] });
 		// The reaper finishes the kill; the session id must stay resumable.
 		expect(findResumeCandidateBinding(db, "ws-1", "t1")).toBeDefined();
+	});
+});
+
+describe("explainTerminalAgentBinding", () => {
+	function seedTerminalSession(db: HostDb, terminalId: string) {
+		db.insert(terminalSessions)
+			.values({
+				id: terminalId,
+				status: "active",
+				originWorkspaceId: "ws-1",
+				createdAt: 1,
+			})
+			.run();
+	}
+
+	it("answers { binding: null } when no agent has ever reported", () => {
+		const db = createTestDb();
+
+		const result = explainTerminalAgentBinding(
+			{ db, terminalAgentStore: createStore(db) },
+			{ workspaceId: "ws-1", terminalId: "t-plain-shell" },
+		);
+
+		expect(result).toEqual({ binding: null });
+	});
+
+	it("surfaces the live binding's evidence with a host-clock sinceMs", () => {
+		const db = createTestDb();
+		seedTerminalSession(db, "t1");
+		const store = createStore(db);
+		store.recordEvent({
+			terminalId: "t1",
+			workspaceId: "ws-1",
+			eventType: "Start",
+			agentId: "claude",
+			agentSessionId: "sess-t1",
+			occurredAt: 1_000,
+		});
+
+		const result = explainTerminalAgentBinding(
+			{ db, terminalAgentStore: store },
+			{ workspaceId: "ws-1", terminalId: "t1" },
+			5_000,
+		);
+
+		expect(result).toEqual({
+			binding: {
+				terminalId: "t1",
+				workspaceId: "ws-1",
+				agentId: "claude",
+				agentSessionId: "sess-t1",
+				definitionId: null,
+				startedAt: 1_000,
+				lastEventAt: 1_000,
+				lastEventType: "Start",
+				endedAt: null,
+				endReason: null,
+			},
+			derivedStatus: "working",
+			sinceMs: 4_000,
+		});
+	});
+
+	it("derives each lifecycle event to the status the desktop would show", () => {
+		const db = createTestDb();
+		const store = createStore(db);
+		const cases = [
+			["PermissionRequest", "permission"],
+			["Failed", "failed"],
+			["Stop", "idle"],
+			["Attached", "idle"],
+		] as const;
+		for (const [index, [eventType]] of cases.entries()) {
+			seedTerminalSession(db, `t${index}`);
+			store.recordEvent({
+				terminalId: `t${index}`,
+				workspaceId: "ws-1",
+				eventType,
+				agentId: "claude",
+				occurredAt: 1_000,
+			});
+		}
+
+		for (const [index, [, status]] of cases.entries()) {
+			const result = explainTerminalAgentBinding(
+				{ db, terminalAgentStore: store },
+				{ workspaceId: "ws-1", terminalId: `t${index}` },
+			);
+			if (result.binding === null) throw new Error("expected a binding");
+			expect(result.binding.agentSessionId).toBeNull();
+			expect(result.derivedStatus).toBe(status);
+		}
+	});
+
+	it("still explains an ended binding, including why it ended", () => {
+		const db = createTestDb();
+		seedTerminalSession(db, "t1");
+		const store = createStore(db);
+		store.recordEvent({
+			terminalId: "t1",
+			workspaceId: "ws-1",
+			eventType: "Start",
+			agentId: "claude",
+			agentSessionId: "sess-t1",
+			occurredAt: 1_000,
+		});
+		store.recordEvent({
+			terminalId: "t1",
+			workspaceId: "ws-1",
+			eventType: "exit",
+			occurredAt: 5_000,
+		});
+		// Ended rows leave the live view entirely.
+		expect(store.get("t1")).toBeUndefined();
+
+		const result = explainTerminalAgentBinding(
+			{ db, terminalAgentStore: store },
+			{ workspaceId: "ws-1", terminalId: "t1" },
+			9_000,
+		);
+
+		expect(result).toEqual({
+			binding: {
+				terminalId: "t1",
+				workspaceId: "ws-1",
+				agentId: "claude",
+				agentSessionId: "sess-t1",
+				definitionId: null,
+				startedAt: 1_000,
+				lastEventAt: 1_000,
+				lastEventType: "Start",
+				endedAt: 5_000,
+				endReason: "terminal-exited",
+			},
+			derivedStatus: "ended",
+			sinceMs: 8_000,
+		});
+	});
+
+	it("does not leak a binding from another workspace", () => {
+		const db = createTestDb();
+		seedTerminalSession(db, "t1");
+		const store = createStore(db);
+		store.recordEvent({
+			terminalId: "t1",
+			workspaceId: "ws-1",
+			eventType: "Start",
+			agentId: "claude",
+			occurredAt: 1_000,
+		});
+
+		const result = explainTerminalAgentBinding(
+			{ db, terminalAgentStore: store },
+			{ workspaceId: "ws-other", terminalId: "t1" },
+		);
+
+		expect(result).toEqual({ binding: null });
 	});
 });

@@ -11,12 +11,14 @@ import {
 } from "../../../terminal/terminal";
 import type {
 	TerminalAgentBinding,
+	TerminalAgentEndReason,
 	TerminalAgentId,
 	TerminalAgentStore,
 } from "../../../terminal-agents";
 import {
 	claimResumeCandidateBinding,
 	findResumeCandidateBinding,
+	getTerminalAgentBindingAnyState,
 	seedEndedTerminalAgentBinding,
 	unclaimResumeCandidateBinding,
 } from "../../../terminal-agents/persistence";
@@ -208,6 +210,92 @@ export async function restartAccountSessions(
 	return { restartedTerminalIds };
 }
 
+export type ExplainedAgentStatus =
+	| "working"
+	| "permission"
+	| "failed"
+	| "idle"
+	| "ended";
+
+export type TerminalAgentExplanation =
+	| { binding: null }
+	| {
+			binding: {
+				terminalId: string;
+				workspaceId: string;
+				agentId: TerminalAgentId;
+				agentSessionId: string | null;
+				definitionId: AgentDefinitionId | null;
+				startedAt: number;
+				lastEventAt: number;
+				lastEventType: string;
+				endedAt: number | null;
+				endReason: TerminalAgentEndReason | null;
+			};
+			derivedStatus: ExplainedAgentStatus;
+			sinceMs: number;
+	  };
+
+/**
+ * Mirror of the desktop's deriveTerminalAgentStatus, minus seen-gating (the
+ * CLI has no "seen" concept, so a fresh Stop reads "idle" here where the
+ * desktop may still show "review" until the pane is viewed). "ended" is
+ * extra: ended rows never reach the desktop derivation at all — its live
+ * reads hide them — so ended is what "no status shown" derives from.
+ */
+function deriveExplainedStatus(
+	binding: TerminalAgentBinding,
+): ExplainedAgentStatus {
+	if (binding.endedAt !== undefined) return "ended";
+	if (binding.lastEventType === "Start") return "working";
+	if (binding.lastEventType === "PermissionRequest") return "permission";
+	if (binding.lastEventType === "Failed") return "failed";
+	return "idle";
+}
+
+/**
+ * The raw evidence behind a terminal's agent status indicator: the binding
+ * exactly as hook events left it — ended rows included, since "the session
+ * ended, and why" is itself part of the explanation — plus the status those
+ * events derive to. Statuses are hook self-reports with no liveness probe
+ * (interrupts fire no hook at all), so a wedged indicator explains itself
+ * here as a stale last event instead of requiring source-diving. `sinceMs`
+ * is computed on the host's clock so remote reads don't inherit skew.
+ */
+export function explainTerminalAgentBinding(
+	deps: { db: HostDb; terminalAgentStore: TerminalAgentStore },
+	input: { workspaceId: string; terminalId: string },
+	now: number = Date.now(),
+): TerminalAgentExplanation {
+	const live = deps.terminalAgentStore.get(input.terminalId);
+	const binding =
+		live && live.workspaceId === input.workspaceId
+			? live
+			: getTerminalAgentBindingAnyState(
+					deps.db,
+					input.workspaceId,
+					input.terminalId,
+				);
+	if (!binding) return { binding: null };
+
+	return {
+		binding: {
+			terminalId: binding.terminalId,
+			workspaceId: binding.workspaceId,
+			agentId: binding.agentId,
+			agentSessionId: binding.agentSessionId ?? null,
+			definitionId: binding.definitionId ?? null,
+			startedAt: binding.startedAt,
+			lastEventAt: binding.lastEventAt,
+			lastEventType: binding.lastEventType,
+			endedAt: binding.endedAt ?? null,
+			endReason: binding.endReason ?? null,
+		},
+		derivedStatus: deriveExplainedStatus(binding),
+		sinceMs: Math.max(0, now - binding.lastEventAt),
+	};
+}
+
 function inflightKey(
 	workspaceId: string,
 	agentId: TerminalAgentId,
@@ -262,6 +350,16 @@ export const terminalAgentsRouter = router({
 				) ?? null
 			);
 		}),
+
+	/** See {@link explainTerminalAgentBinding}. */
+	explain: protectedProcedure
+		.input(z.object({ workspaceId: z.string(), terminalId: z.string() }))
+		.query(({ ctx, input }) =>
+			explainTerminalAgentBinding(
+				{ db: ctx.db, terminalAgentStore: ctx.terminalAgentStore },
+				input,
+			),
+		),
 
 	/**
 	 * The resumable agent session behind a dead terminal, if any: the binding
