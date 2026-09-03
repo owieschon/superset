@@ -357,6 +357,28 @@ describe("binding end marking and resume candidates", () => {
 		expect(claimResumeCandidateBinding(db, "ws-1", "t1")).toBeUndefined();
 	});
 
+	it("a dispose overrides a terminal-death stamp that beat it", () => {
+		// The pane-close route marks the binding disposed before its kill, but
+		// the terminal can already be dead: a pty exit or the reaper's sweep
+		// stamps "terminal-exited" first. The user's decision still has to
+		// win, or auto-resume brings the killed session back.
+		const db = createTestDb();
+		seedWithSessionId(db, "t1");
+		markTerminalAgentBindingEnded(db, "t1", "terminal-exited", 42);
+		expect(findResumeCandidateBinding(db, "ws-1", "t1")).toBeDefined();
+
+		expect(markTerminalAgentBindingEnded(db, "t1", "disposed", 90)).toEqual({
+			workspaceId: "ws-1",
+		});
+
+		expect(findResumeCandidateBinding(db, "ws-1", "t1")).toBeUndefined();
+		expect(claimResumeCandidateBinding(db, "ws-1", "t1")).toBeUndefined();
+		// Only the reason changes — the first writer's timestamp stands.
+		expect(
+			new SqliteTerminalAgentBindingPersistence(db).getEnded("t1"),
+		).toEqual({ endedAt: 42, agentSessionId: "sess-t1" });
+	});
+
 	it("a claimed row survives late terminal-death marking untouched", () => {
 		// Disposing the dead terminal after a successful resume routes through
 		// markTerminalExited — that must not resurrect the candidate.
