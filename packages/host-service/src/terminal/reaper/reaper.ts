@@ -2,6 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { HostDb } from "../../db/index.ts";
 import { terminalSessions } from "../../db/schema.ts";
 import { portManager } from "../../ports/port-manager.ts";
+import { markTerminalAgentBindingEnded } from "../../terminal-agents/persistence.ts";
 import { getDaemonClient } from "../daemon-client-singleton.ts";
 import { disposeSessionAndWait, isLiveTerminalSession } from "../terminal.ts";
 
@@ -169,9 +170,13 @@ function loadTerminalRowsById(db: HostDb): Map<string, TerminalRow> {
 	return new Map(rows.map((row) => [row.id, row]));
 }
 
-/** Flip daemon-lost `active` rows to `exited` so live-session reads (agent
- * bindings, resume candidates) stop offering ptys that no longer exist. */
-function markStaleActiveRows(
+/**
+ * Flip daemon-lost `active` rows to `exited` (or `disposed`, honoring a
+ * pending dispose) so live-session reads stop offering ptys that no longer
+ * exist, and end the exited rows' agent bindings so their sessions stay
+ * resumable. Returns how many rows the plan condemned.
+ */
+export function markStaleActiveRows(
 	db: HostDb,
 	liveSessions: { id: string }[],
 	rowById: Map<string, TerminalRow>,
@@ -188,20 +193,43 @@ function markStaleActiveRows(
 	});
 	const total = stale.exited.length + stale.disposed.length;
 	if (total === 0) return 0;
+	const endedAt = Date.now();
 	for (const [ids, status] of [
 		[stale.exited, "exited"],
 		[stale.disposed, "disposed"],
 	] as const) {
 		if (ids.length === 0) continue;
-		db.update(terminalSessions)
-			.set({ status, endedAt: Date.now() })
+		const marked = db
+			.update(terminalSessions)
+			.set({ status, endedAt })
 			.where(
 				and(
 					inArray(terminalSessions.id, ids),
 					eq(terminalSessions.status, "active"),
 				),
 			)
-			.run();
+			.returning({ id: terminalSessions.id })
+			.all();
+		// An `exited` row is the pty dying under whatever was running in it, so
+		// end its agent binding the way the pty exit callback and the lazy
+		// respawn do — that "terminal-exited" stamp is what makes the session a
+		// resume candidate. Without it the sweep drops the terminal out of every
+		// live read and leaves nothing to resume from: the row is no longer
+		// `active`, so an attach answers session-gone before it can reach the
+		// respawn that would have ended the binding. `disposed` rows are left
+		// alone for the same reason the dispose route leaves them alone — a
+		// session the user killed must not come back as a resume candidate.
+		if (status !== "exited") continue;
+		for (const row of marked) {
+			try {
+				markTerminalAgentBindingEnded(db, row.id, "terminal-exited", endedAt);
+			} catch (err) {
+				console.warn(
+					`[host-service] terminal reaper: failed to end agent binding for ${row.id}:`,
+					err,
+				);
+			}
+		}
 	}
 	console.log(
 		`[host-service] terminal reaper: marked ${total} daemon-lost session(s) ended (${stale.exited.length} exited, ${stale.disposed.length} disposed)`,
