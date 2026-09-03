@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import { resolve } from "node:path";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 import type { HostDb } from "../db";
@@ -12,6 +13,7 @@ import {
 	markTerminalAgentBindingEnded,
 	SqliteTerminalAgentBindingPersistence,
 	seedEndedTerminalAgentBinding,
+	snapshotTerminalAgentBindingSessionIds,
 	unclaimResumeCandidateBinding,
 } from "./persistence";
 import { TerminalAgentStore } from "./store";
@@ -502,5 +504,34 @@ describe("seedEndedTerminalAgentBinding (v1 pane migration)", () => {
 				agentSessionId: "sess-v1",
 			}),
 		).toBe("terminal-not-found");
+	});
+});
+
+describe("snapshotTerminalAgentBindingSessionIds", () => {
+	it("tells a bound session, a binding without one, and no binding apart", () => {
+		const db = createTestDb();
+		// seedSession's binding carries no agentSessionId.
+		seedSession(db, { id: "t-idless", status: "active", workspaceId: "ws-1" });
+		seedSession(db, { id: "t-bound", status: "active", workspaceId: "ws-1" });
+		db.update(terminalAgentBindings)
+			.set({ agentSessionId: "sess-1" })
+			.where(eq(terminalAgentBindings.terminalId, "t-bound"))
+			.run();
+		db.insert(terminalSessions)
+			.values({
+				id: "t-unbound",
+				status: "active",
+				originWorkspaceId: "ws-1",
+				createdAt: 1,
+			})
+			.run();
+
+		const snapshot = snapshotTerminalAgentBindingSessionIds(db);
+
+		// A caller ending bindings after an async probe needs all three apart:
+		// only `undefined` means "nothing to strand here".
+		expect(snapshot.get("t-bound")).toBe("sess-1");
+		expect(snapshot.get("t-idless")).toBeNull();
+		expect(snapshot.has("t-unbound")).toBe(false);
 	});
 });
