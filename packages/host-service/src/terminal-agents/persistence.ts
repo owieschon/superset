@@ -65,6 +65,13 @@ function rowToBinding(row: BindingRow): TerminalAgentBinding {
 const DEATH_GASP_DETACH_WINDOW_MS = 30_000;
 
 /**
+ * The db surface this helper needs: the root handle or an open transaction,
+ * so a caller that also writes the terminal row can stamp the binding inside
+ * that same transaction.
+ */
+export type BindingWriter = Pick<HostDb, "select" | "update">;
+
+/**
  * Mark a binding's agent session as ended without deleting the row, so its
  * `agentSessionId` survives for resume. "terminal-exited" is sticky: a
  * goodbye that trickles in after the terminal already died never downgrades
@@ -73,7 +80,7 @@ const DEATH_GASP_DETACH_WINDOW_MS = 30_000;
  * the workspaceId when a row was updated.
  */
 export function markTerminalAgentBindingEnded(
-	db: HostDb,
+	db: BindingWriter,
 	terminalId: string,
 	reason: TerminalAgentEndReason,
 	endedAt: number = Date.now(),
@@ -94,9 +101,16 @@ export function markTerminalAgentBindingEnded(
 			reason === "terminal-exited" &&
 			row.endReason === "detached" &&
 			endedAt - row.endedAt <= DEATH_GASP_DETACH_WINDOW_MS;
-		if (!isDeathGaspDetach) return undefined;
+		// A dispose is the user ending the session, so it overrides whatever
+		// end reason got there first. Otherwise a "terminal-exited" stamp that
+		// beat the dispose — a pty exit, or the reaper sweeping the row after
+		// daemon loss — would leave the killed session a resume candidate and
+		// auto-resume would bring it back at the next pane mount. Only the
+		// reason changes: `endedAt` keeps the first writer's timestamp, the
+		// same way the death-gasp upgrade does.
+		if (reason !== "disposed" && !isDeathGaspDetach) return undefined;
 		db.update(terminalAgentBindings)
-			.set({ endReason: "terminal-exited" })
+			.set({ endReason: reason })
 			.where(eq(terminalAgentBindings.terminalId, terminalId))
 			.run();
 		return { workspaceId: row.workspaceId };

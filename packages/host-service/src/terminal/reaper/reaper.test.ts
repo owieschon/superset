@@ -1,13 +1,17 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import { resolve } from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 import type { HostDb } from "../../db/index.ts";
 import * as schema from "../../db/schema.ts";
 import { terminalAgentBindings, terminalSessions } from "../../db/schema.ts";
-import { findResumeCandidateBinding } from "../../terminal-agents/persistence.ts";
+import {
+	claimResumeCandidateBinding,
+	findResumeCandidateBinding,
+	markTerminalAgentBindingEnded,
+} from "../../terminal-agents/persistence.ts";
 import {
 	markStaleActiveRows,
 	PORT_SCAN_WARMUP_DELAYS_MS,
@@ -340,6 +344,33 @@ describe("markStaleActiveRows agent bindings", () => {
 			.run();
 	}
 
+	/**
+	 * The row snapshot the reaper passes in, loaded the way its own
+	 * `loadTerminalRowsById` does. Tests that exercise the policy must supply
+	 * it: with a non-empty `liveSessions` the sweep trusts the caller's map
+	 * and never reloads, so an empty map means the policy sees no rows at all.
+	 */
+	function snapshotRows(db: HostDb) {
+		const rows = db
+			.select({
+				id: terminalSessions.id,
+				status: terminalSessions.status,
+				originWorkspaceId: terminalSessions.originWorkspaceId,
+				disposeRequestedAt: terminalSessions.disposeRequestedAt,
+				createdAt: terminalSessions.createdAt,
+			})
+			.from(terminalSessions)
+			.all();
+		return new Map(rows.map((row) => [row.id, row]));
+	}
+
+	function requestDispose(db: HostDb, id: string) {
+		db.update(terminalSessions)
+			.set({ disposeRequestedAt: Date.now() })
+			.where(eq(terminalSessions.id, id))
+			.run();
+	}
+
 	function statusOf(db: HostDb, id: string): string | undefined {
 		return db
 			.select({ status: terminalSessions.status })
@@ -386,13 +417,111 @@ describe("markStaleActiveRows agent bindings", () => {
 		const db = createTestDb();
 		seed(db, { id: "t-alive" });
 		seed(db, { id: "t-fresh", createdAt: Date.now() });
+		seed(db, { id: "t-stale" });
 
-		markStaleActiveRows(db, [{ id: "t-alive" }], new Map());
+		// t-alive is still in the daemon's list and t-fresh is inside the
+		// spawn grace window; only t-stale is condemned. Its sweep is what
+		// proves the policy actually evaluated these rows.
+		expect(markStaleActiveRows(db, [{ id: "t-alive" }], snapshotRows(db))).toBe(
+			1,
+		);
 
+		expect(statusOf(db, "t-stale")).toBe("exited");
 		expect(statusOf(db, "t-alive")).toBe("active");
 		expect(bindingOf(db, "t-alive")?.endedAt).toBeNull();
 		expect(statusOf(db, "t-fresh")).toBe("active");
 		expect(bindingOf(db, "t-fresh")?.endedAt).toBeNull();
+	});
+
+	it("rolls the row back when the binding write fails, and retries later", () => {
+		const db = createTestDb();
+		seed(db, { id: "t-lost" });
+		// A binding write that fails for any reason (locked db, constraint,
+		// corrupt row). Committing the status flip without the binding stamp
+		// is unrecoverable: the row leaves `active`, so no later sweep, attach
+		// or respawn ever ends the binding again.
+		db.run(
+			sql`CREATE TRIGGER fail_binding_write BEFORE UPDATE ON terminal_agent_bindings BEGIN SELECT RAISE(ABORT, 'binding write failed'); END`,
+		);
+
+		markStaleActiveRows(db, [], new Map());
+
+		// Nothing committed, so the row is still a candidate for the sweep.
+		expect(statusOf(db, "t-lost")).toBe("active");
+		expect(bindingOf(db, "t-lost")?.endedAt).toBeNull();
+
+		db.run(sql`DROP TRIGGER fail_binding_write`);
+		expect(markStaleActiveRows(db, [], new Map())).toBe(1);
+
+		expect(statusOf(db, "t-lost")).toBe("exited");
+		expect(
+			findResumeCandidateBinding(db, "ws-1", "t-lost")?.agentSessionId,
+		).toBe("sess-1");
+	});
+
+	it("lets a dispose that lands after the snapshot beat the exit flip", () => {
+		const db = createTestDb();
+		seed(db, { id: "t-racing" });
+		// The plan is built from rows read before the daemon answered; the
+		// user's dispose stamps its durable intent during that window.
+		const snapshot = snapshotRows(db);
+		requestDispose(db, "t-racing");
+
+		markStaleActiveRows(db, [], snapshot);
+
+		// Not flipped to the resumable `exited` outcome: the row stays
+		// `active`, which is what the in-flight dispose (or the next pass)
+		// resolves.
+		expect(statusOf(db, "t-racing")).toBe("active");
+		expect(bindingOf(db, "t-racing")?.endedAt).toBeNull();
+		expect(findResumeCandidateBinding(db, "ws-1", "t-racing")).toBeUndefined();
+
+		expect(markStaleActiveRows(db, [], new Map())).toBe(1);
+		expect(statusOf(db, "t-racing")).toBe("disposed");
+		expect(findResumeCandidateBinding(db, "ws-1", "t-racing")).toBeUndefined();
+	});
+
+	it("stops offering resume when a dispose lands after the exit flip", () => {
+		const db = createTestDb();
+		seed(db, { id: "t-swept" });
+
+		expect(markStaleActiveRows(db, [], new Map())).toBe(1);
+		expect(findResumeCandidateBinding(db, "ws-1", "t-swept")).toBeDefined();
+
+		// The user closes the pane a moment later. The dispose route stamps
+		// the binding first, then `disposeSessionAndWait` stamps the durable
+		// intent and flips the row — and none of it may leave the pane
+		// auto-resuming the session they just ended.
+		markTerminalAgentBindingEnded(db, "t-swept", "disposed");
+		requestDispose(db, "t-swept");
+		db.update(terminalSessions)
+			.set({ status: "disposed", endedAt: Date.now() })
+			.where(eq(terminalSessions.id, "t-swept"))
+			.run();
+
+		expect(bindingOf(db, "t-swept")?.endReason).toBe("disposed");
+		expect(findResumeCandidateBinding(db, "ws-1", "t-swept")).toBeUndefined();
+		expect(claimResumeCandidateBinding(db, "ws-1", "t-swept")).toBeUndefined();
+	});
+
+	it("keeps a binding the dispose route already stamped out of resume", () => {
+		// The reverse interleaving: the dispose route stamped the binding
+		// disposed and its kill has not flipped the row yet, so the sweep
+		// still sees an `active` row with no intent stamp. "disposed" is
+		// sticky — the sweep's terminal-death stamp must not overwrite it.
+		const db = createTestDb();
+		seed(db, {
+			id: "t-pane-closed",
+			binding: { endedAt: OLD, endReason: "disposed" },
+		});
+
+		expect(markStaleActiveRows(db, [], new Map())).toBe(1);
+
+		expect(statusOf(db, "t-pane-closed")).toBe("exited");
+		expect(bindingOf(db, "t-pane-closed")?.endReason).toBe("disposed");
+		expect(
+			findResumeCandidateBinding(db, "ws-1", "t-pane-closed"),
+		).toBeUndefined();
 	});
 
 	it("does not overwrite an older clean detach", () => {
