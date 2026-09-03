@@ -33,6 +33,8 @@ interface SessionSummary {
 
 /** What `terminal.list` has answered for this workspace, set per test. */
 let listed: { sessions: SessionSummary[] } | undefined;
+/** Whether that answer is a cached one still being refetched. */
+let isFetchingSessions = false;
 
 // The wire is faked here rather than behind a real React Query client on
 // purpose. `V2ProjectSettings.test.tsx` replaces the whole of
@@ -48,7 +50,9 @@ mock.module("@superset/workspace-client", () => ({
 	...realWorkspaceClient,
 	workspaceTrpc: {
 		terminal: {
-			list: { useQuery: () => ({ data: listed, isFetching: false }) },
+			list: {
+				useQuery: () => ({ data: listed, isFetching: isFetchingSessions }),
+			},
 		},
 	},
 }));
@@ -135,18 +139,26 @@ function attachedTerminalIds(store: Store): string[] {
 		.sort();
 }
 
-function adopt(store: Store) {
-	return renderHook(() =>
-		useAutoAdoptBackgroundSessions({
-			store,
-			workspaceId: WORKSPACE_ID,
-			isLayoutReady: true,
-		}),
+interface AdoptProps {
+	store: Store;
+	isLayoutReady: boolean;
+}
+
+function adopt(store: Store, isLayoutReady = true) {
+	return renderHook(
+		({ store: current, isLayoutReady: ready }: AdoptProps) =>
+			useAutoAdoptBackgroundSessions({
+				store: current,
+				workspaceId: WORKSPACE_ID,
+				isLayoutReady: ready,
+			}),
+		{ initialProps: { store, isLayoutReady } },
 	);
 }
 
 beforeEach(() => {
 	listed = undefined;
+	isFetchingSessions = false;
 	for (const id of ["terminal-live", "terminal-old", "terminal-new"]) {
 		clearTerminalBackgroundMarker(WORKSPACE_ID, id);
 	}
@@ -242,12 +254,56 @@ describe("useAutoAdoptBackgroundSessions after a restart", () => {
 		act(() => {
 			listed = { sessions: [session("terminal-live", 2)] };
 		});
-		rerender();
+		rerender({ store, isLayoutReady: true });
 
 		expect(attachedTerminalIds(store)).toEqual([
 			"terminal-dead",
 			"terminal-live",
 		]);
+		expect(activeTerminalId(store)).toBe("terminal-live");
+	});
+
+	// The store is empty until the persisted layout is read back, and an empty
+	// store answers "no pane attached" for every session. Adopting then would
+	// build a second pane for a session the layout already has one for, so the
+	// pass waits even though the session list has already settled.
+	test("layout not hydrated: nothing is adopted from a settled list", () => {
+		const store = createStore();
+		listed = { sessions: [session("terminal-live", 2)] };
+
+		adopt(store, false);
+
+		expect(store.getState().tabs).toHaveLength(0);
+	});
+
+	test("hydration lands after the answer: the session keeps its one pane", () => {
+		listed = { sessions: [session("terminal-live", 1)] };
+		const preHydration = createStore();
+		const hydrated = createStore([terminalTab("tab-live", "terminal-live")]);
+
+		const { rerender } = adopt(preHydration, false);
+		expect(preHydration.getState().tabs).toHaveLength(0);
+
+		rerender({ store: hydrated, isLayoutReady: true });
+
+		expect(attachedTerminalIds(hydrated)).toEqual(["terminal-live"]);
+		expect(hydrated.getState().activeTabId).toBe("tab-live");
+	});
+
+	// A cached list being refetched can still name a session the host killed
+	// while the workspace was closed; adopting it would hand focus to a pane
+	// that can only render as Disconnected.
+	test("a cached list still refetching is not acted on until it settles", () => {
+		const store = createStore([terminalTab("tab-dead", "terminal-dead")]);
+		listed = { sessions: [session("terminal-live", 2)] };
+		isFetchingSessions = true;
+
+		const { rerender } = adopt(store);
+		expect(store.getState().tabs).toHaveLength(1);
+
+		isFetchingSessions = false;
+		rerender({ store, isLayoutReady: true });
+
 		expect(activeTerminalId(store)).toBe("terminal-live");
 	});
 });
