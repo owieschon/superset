@@ -1,11 +1,23 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
+import { resolve } from "node:path";
+import { eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/bun-sqlite";
+import { migrate } from "drizzle-orm/bun-sqlite/migrator";
+import type { HostDb } from "../../db/index.ts";
+import * as schema from "../../db/schema.ts";
+import { terminalAgentBindings, terminalSessions } from "../../db/schema.ts";
+import { findResumeCandidateBinding } from "../../terminal-agents/persistence.ts";
 import {
+	markStaleActiveRows,
 	PORT_SCAN_WARMUP_DELAYS_MS,
 	planPortScanSync,
 	planStaleActiveRows,
 	REAP_INTERVAL_MS,
 	shouldReapRow,
 } from "./reaper.ts";
+
+const MIGRATIONS_FOLDER = resolve(import.meta.dir, "../../../drizzle");
 
 const noneLive = () => false;
 
@@ -271,5 +283,131 @@ describe("planStaleActiveRows", () => {
 			now: NOW,
 		});
 		expect(stale).toEqual({ exited: ["t-crashed"], disposed: ["t-disposing"] });
+	});
+});
+
+describe("markStaleActiveRows agent bindings", () => {
+	const OLD = Date.now() - 10 * 60_000;
+
+	function createTestDb(): HostDb {
+		const sqlite = new Database(":memory:");
+		const db = drizzle(sqlite, { schema });
+		migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+		// bun:sqlite's drizzle type differs from the better-sqlite3-based
+		// HostDb; the query surface used here is identical (same cast as
+		// terminal-agents/persistence.test.ts).
+		return db as unknown as HostDb;
+	}
+
+	function seed(
+		db: HostDb,
+		row: {
+			id: string;
+			status?: string;
+			workspaceId?: string | null;
+			createdAt?: number;
+			disposeRequestedAt?: number | null;
+			binding?: {
+				agentSessionId?: string | null;
+				lastEventType?: string;
+				endedAt?: number | null;
+				endReason?: string | null;
+			} | null;
+		},
+	) {
+		db.insert(terminalSessions)
+			.values({
+				id: row.id,
+				status: row.status ?? "active",
+				originWorkspaceId: row.workspaceId ?? "ws-1",
+				createdAt: row.createdAt ?? OLD,
+				disposeRequestedAt: row.disposeRequestedAt ?? null,
+			})
+			.run();
+		if (row.binding === null) return;
+		db.insert(terminalAgentBindings)
+			.values({
+				terminalId: row.id,
+				workspaceId: row.workspaceId ?? "ws-1",
+				agentId: "claude",
+				agentSessionId: row.binding?.agentSessionId ?? "sess-1",
+				startedAt: OLD,
+				lastEventAt: OLD,
+				lastEventType: row.binding?.lastEventType ?? "Stop",
+				endedAt: row.binding?.endedAt ?? null,
+				endReason: row.binding?.endReason ?? null,
+			})
+			.run();
+	}
+
+	function statusOf(db: HostDb, id: string): string | undefined {
+		return db
+			.select({ status: terminalSessions.status })
+			.from(terminalSessions)
+			.where(eq(terminalSessions.id, id))
+			.get()?.status;
+	}
+
+	function bindingOf(db: HostDb, id: string) {
+		return db
+			.select({
+				endedAt: terminalAgentBindings.endedAt,
+				endReason: terminalAgentBindings.endReason,
+			})
+			.from(terminalAgentBindings)
+			.where(eq(terminalAgentBindings.terminalId, id))
+			.get();
+	}
+
+	it("leaves a daemon-lost agent session resumable", () => {
+		const db = createTestDb();
+		seed(db, { id: "t-lost" });
+
+		markStaleActiveRows(db, [], new Map());
+
+		expect(statusOf(db, "t-lost")).toBe("exited");
+		expect(bindingOf(db, "t-lost")?.endReason).toBe("terminal-exited");
+		expect(
+			findResumeCandidateBinding(db, "ws-1", "t-lost")?.agentSessionId,
+		).toBe("sess-1");
+	});
+
+	it("keeps a dispose-stamped row's agent out of the resume candidates", () => {
+		const db = createTestDb();
+		seed(db, { id: "t-killed", disposeRequestedAt: OLD });
+
+		markStaleActiveRows(db, [], new Map());
+
+		expect(statusOf(db, "t-killed")).toBe("disposed");
+		expect(findResumeCandidateBinding(db, "ws-1", "t-killed")).toBeUndefined();
+	});
+
+	it("leaves bindings of rows it does not sweep untouched", () => {
+		const db = createTestDb();
+		seed(db, { id: "t-alive" });
+		seed(db, { id: "t-fresh", createdAt: Date.now() });
+
+		markStaleActiveRows(db, [{ id: "t-alive" }], new Map());
+
+		expect(statusOf(db, "t-alive")).toBe("active");
+		expect(bindingOf(db, "t-alive")?.endedAt).toBeNull();
+		expect(statusOf(db, "t-fresh")).toBe("active");
+		expect(bindingOf(db, "t-fresh")?.endedAt).toBeNull();
+	});
+
+	it("does not overwrite an older clean detach", () => {
+		const db = createTestDb();
+		seed(db, {
+			id: "t-detached",
+			binding: { endedAt: OLD, endReason: "detached" },
+		});
+
+		markStaleActiveRows(db, [], new Map());
+
+		expect(statusOf(db, "t-detached")).toBe("exited");
+		expect(bindingOf(db, "t-detached")?.endReason).toBe("detached");
+		expect(
+			findResumeCandidateBinding(db, "ws-1", "t-detached"),
+		).toBeUndefined();
 	});
 });
