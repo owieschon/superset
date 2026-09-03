@@ -165,11 +165,12 @@ beforeEach(() => {
 });
 
 describe("useAutoAdoptBackgroundSessions after a restart", () => {
-	// The verified production case: the persisted active tab names a terminal
-	// the host disposed while the app was closed, and the agent launched in its
-	// place has no pane. Because only the active tab mounts, leaving focus on
-	// the dead tab meant the live pane never attached — it stayed blank and
-	// untitled while the agent ran.
+	// A pane persisted with only a terminalId — an adopted or agent pane, which
+	// carries no createOnAttach flag — stays in the layout after its PTY is
+	// gone, and can still be the active tab on the next open. Nothing recreates
+	// it, so the host never lists it again. Because only the active tab mounts,
+	// restoring that tab buries the session just adopted and its pane never
+	// attaches. This test models that state directly.
 	test("dead selected terminal: focus moves to the adopted session", () => {
 		const store = createStore([terminalTab("tab-dead", "terminal-dead")]);
 		listed = { sessions: [session("terminal-live", 2)] };
