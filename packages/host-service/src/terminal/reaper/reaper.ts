@@ -2,7 +2,11 @@ import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { HostDb } from "../../db/index.ts";
 import { terminalSessions } from "../../db/schema.ts";
 import { portManager } from "../../ports/port-manager.ts";
-import { markTerminalAgentBindingEnded } from "../../terminal-agents/persistence.ts";
+import {
+	markTerminalAgentBindingEnded,
+	readTerminalAgentBindingSessionId,
+	snapshotTerminalAgentBindingSessionIds,
+} from "../../terminal-agents/persistence.ts";
 import { getDaemonClient } from "../daemon-client-singleton.ts";
 import { disposeSessionAndWait, isLiveTerminalSession } from "../terminal.ts";
 
@@ -189,14 +193,41 @@ function loadTerminalRowsById(db: HostDb): Map<string, TerminalRow> {
  * landed since must not be overwritten with the resumable `exited` outcome.
  * Such a row stays `active`, and the next pass condemns it as `disposed`.
  *
+ * `expectedSessionId` is which agent session owned this terminal when the
+ * daemon probe began (see {@link snapshotTerminalAgentBindingSessionIds}),
+ * re-checked here so both writes land on that same binding or on none. The
+ * probe is a real await: a respawn can bind a NEW agent session to the
+ * terminal while it runs, and that session's pty is not the one the daemon
+ * declared lost. Ending its binding would hide a live agent from every read,
+ * and committing `exited` alongside it would strand it for good — the row
+ * leaves `active`, so no later pass reconsiders it and an attach answers
+ * session-gone. So a terminal whose binding was replaced, or that gained one
+ * during the probe, is left entirely alone for the next pass to re-probe.
+ *
+ * A binding with no concrete session id (`null`) is no baseline at all — the
+ * same reason `sweepAgentBindingsAfterDaemonLoss` leaves those untouched —
+ * so it is skipped rather than swept on an ownership claim we cannot make.
+ * That row keeps haunting live reads until an attach respawns it or a dispose
+ * kills it, which is the cheaper mistake: those bindings are never resume
+ * candidates, so the sweep has little to win on them and a live agent to lose.
+ * A terminal with no binding at either point has nothing to strand and is
+ * swept as before.
+ *
  * Returns whether the row was marked.
  */
 function markStaleExitedRow(
 	db: HostDb,
 	terminalId: string,
 	endedAt: number,
+	expectedSessionId: string | null | undefined,
 ): boolean {
 	return db.transaction((tx) => {
+		// Before any write: a plain `return` commits the transaction, so an
+		// ownership refusal has to happen while there is nothing to roll back.
+		const ownerSessionId = readTerminalAgentBindingSessionId(tx, terminalId);
+		if (ownerSessionId === null || ownerSessionId !== expectedSessionId) {
+			return false;
+		}
 		const marked = tx
 			.update(terminalSessions)
 			.set({ status: "exited", endedAt })
@@ -224,11 +255,21 @@ function markStaleExitedRow(
  * come back as a resume candidate. Returns how many rows were marked;
  * anything the plan condemned that this pass could not write stays `active`
  * for the next pass.
+ *
+ * `bindingSessionIds` is the binding ownership the caller captured *before*
+ * the daemon probe whose answer produced `liveSessions`; see
+ * {@link markStaleExitedRow} for what it protects. It defaults to a snapshot
+ * taken right here, which is only correct for a caller that does not probe
+ * asynchronously first.
  */
 export function markStaleActiveRows(
 	db: HostDb,
 	liveSessions: { id: string }[],
 	rowById: Map<string, TerminalRow>,
+	bindingSessionIds: Map<
+		string,
+		string | null
+	> = snapshotTerminalAgentBindingSessionIds(db),
 ): number {
 	const rowsById =
 		rowById.size > 0 || liveSessions.length > 0
@@ -248,7 +289,13 @@ export function markStaleActiveRows(
 	let exited = 0;
 	for (const terminalId of stale.exited) {
 		try {
-			if (markStaleExitedRow(db, terminalId, endedAt)) exited += 1;
+			const swept = markStaleExitedRow(
+				db,
+				terminalId,
+				endedAt,
+				bindingSessionIds.get(terminalId),
+			);
+			if (swept) exited += 1;
 		} catch (err) {
 			console.warn(
 				`[host-service] terminal reaper: left ${terminalId} active — ending its agent binding failed:`,
@@ -311,6 +358,12 @@ function applyPortScanSync(
 }
 
 async function runPortScanSync(db: HostDb) {
+	// Captured before the first await, and carried out with the daemon's
+	// answer, so it is the ownership that held when *this* probe began — the
+	// probe a coalesced caller is about to act on. Getting a daemon client can
+	// itself take seconds (bootstrap, reconnect), which is exactly the window
+	// in which a respawn rebinds a terminal to a new agent session.
+	const bindingSessionIds = snapshotTerminalAgentBindingSessionIds(db);
 	const daemon = await getDaemonClient();
 	const liveSessions = (await daemon.list()).filter((session) => session.alive);
 	const rowById =
@@ -318,7 +371,7 @@ async function runPortScanSync(db: HostDb) {
 			? loadTerminalRowsById(db)
 			: new Map<string, TerminalRow>();
 	applyPortScanSync(liveSessions, rowById);
-	return { liveSessions, rowById };
+	return { liveSessions, rowById, bindingSessionIds };
 }
 
 let inFlightPortScanSync: ReturnType<typeof runPortScanSync> | null = null;
@@ -334,6 +387,8 @@ let inFlightPortScanSync: ReturnType<typeof runPortScanSync> | null = null;
  * the reap pass both call this, and a slow `daemon.list()` right after adoption
  * (exactly when the warm-up fires) could otherwise let a second sync observe a
  * transiently-empty list and unregister sessions the first just registered.
+ * A coalesced caller therefore also gets the binding ownership captured before
+ * that shared probe started, not before its own call.
  */
 function syncPortScans(db: HostDb): ReturnType<typeof runPortScanSync> {
 	if (inFlightPortScanSync) return inFlightPortScanSync;
@@ -349,13 +404,13 @@ async function reapOrphanedSessions(
 ): Promise<ReapResult> {
 	// Sync the port scanner before the empty-list short-circuit below so an idle
 	// daemon still drops stale scans.
-	const { liveSessions, rowById } = await syncPortScans(db);
+	const { liveSessions, rowById, bindingSessionIds } = await syncPortScans(db);
 
 	// The daemon answered (syncPortScans would have thrown otherwise), so its
 	// list is authoritative: reconcile rows stuck `active` for sessions it no
 	// longer owns. Best-effort — a failure here must not block the orphan reap.
 	try {
-		markStaleActiveRows(db, liveSessions, rowById);
+		markStaleActiveRows(db, liveSessions, rowById, bindingSessionIds);
 	} catch (err) {
 		console.warn("[host-service] stale-session sweep failed:", err);
 	}

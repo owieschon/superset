@@ -11,6 +11,7 @@ import {
 	claimResumeCandidateBinding,
 	findResumeCandidateBinding,
 	markTerminalAgentBindingEnded,
+	snapshotTerminalAgentBindingSessionIds,
 } from "../../terminal-agents/persistence.ts";
 import {
 	markStaleActiveRows,
@@ -329,17 +330,23 @@ describe("markStaleActiveRows agent bindings", () => {
 			})
 			.run();
 		if (row.binding === null) return;
+		const binding = row.binding ?? {};
 		db.insert(terminalAgentBindings)
 			.values({
 				terminalId: row.id,
 				workspaceId: row.workspaceId ?? "ws-1",
 				agentId: "claude",
-				agentSessionId: row.binding?.agentSessionId ?? "sess-1",
+				// An explicit null asks for a binding that never captured a
+				// session id; omitting it takes the default.
+				agentSessionId:
+					binding.agentSessionId === undefined
+						? "sess-1"
+						: binding.agentSessionId,
 				startedAt: OLD,
 				lastEventAt: OLD,
-				lastEventType: row.binding?.lastEventType ?? "Stop",
-				endedAt: row.binding?.endedAt ?? null,
-				endReason: row.binding?.endReason ?? null,
+				lastEventType: binding.lastEventType ?? "Stop",
+				endedAt: binding.endedAt ?? null,
+				endReason: binding.endReason ?? null,
 			})
 			.run();
 	}
@@ -382,6 +389,7 @@ describe("markStaleActiveRows agent bindings", () => {
 	function bindingOf(db: HostDb, id: string) {
 		return db
 			.select({
+				agentSessionId: terminalAgentBindings.agentSessionId,
 				endedAt: terminalAgentBindings.endedAt,
 				endReason: terminalAgentBindings.endReason,
 			})
@@ -522,6 +530,134 @@ describe("markStaleActiveRows agent bindings", () => {
 		expect(
 			findResumeCandidateBinding(db, "ws-1", "t-pane-closed"),
 		).toBeUndefined();
+	});
+
+	it("leaves an agent session bound during the daemon probe alone", () => {
+		const db = createTestDb();
+		seed(db, { id: "t-respawned" });
+
+		// What the reaper captures before it awaits the daemon — getting a
+		// client and its session list is a real wait (bootstrap, reconnect,
+		// RPC). A renderer attach lands inside that window: the respawn ends
+		// the lost pty's binding and the new shell's agent binds a fresh
+		// session to the same terminal.
+		const beforeProbe = snapshotTerminalAgentBindingSessionIds(db);
+		const respawnedAt = Date.now();
+		db.update(terminalAgentBindings)
+			.set({
+				agentSessionId: "sess-2",
+				startedAt: respawnedAt,
+				lastEventAt: respawnedAt,
+				lastEventType: "SessionStart",
+				endedAt: null,
+				endReason: null,
+			})
+			.where(eq(terminalAgentBindings.terminalId, "t-respawned"))
+			.run();
+
+		// The daemon's answer condemns the pty that died, not the one that
+		// replaced it, so this pass must write nothing.
+		expect(markStaleActiveRows(db, [], new Map(), beforeProbe)).toBe(0);
+
+		// The replacement is still live in every read...
+		expect(bindingOf(db, "t-respawned")?.agentSessionId).toBe("sess-2");
+		expect(bindingOf(db, "t-respawned")?.endedAt).toBeNull();
+		expect(bindingOf(db, "t-respawned")?.endReason).toBeNull();
+		// ...and its row is still attachable: `exited` would answer
+		// session-gone forever, with no later pass to undo it.
+		expect(statusOf(db, "t-respawned")).toBe("active");
+
+		// Retryable, not skipped forever — the next pass re-probes the daemon
+		// and re-captures ownership, and that is what decides the row then.
+		expect(
+			markStaleActiveRows(
+				db,
+				[],
+				new Map(),
+				snapshotTerminalAgentBindingSessionIds(db),
+			),
+		).toBe(1);
+	});
+
+	it("leaves a terminal that gained a binding during the probe alone", () => {
+		const db = createTestDb();
+		seed(db, { id: "t-bare", binding: null });
+
+		const beforeProbe = snapshotTerminalAgentBindingSessionIds(db);
+		// First hook event from an agent launched in the respawned shell.
+		db.insert(terminalAgentBindings)
+			.values({
+				terminalId: "t-bare",
+				workspaceId: "ws-1",
+				agentId: "claude",
+				agentSessionId: "sess-new",
+				startedAt: Date.now(),
+				lastEventAt: Date.now(),
+				lastEventType: "SessionStart",
+			})
+			.run();
+
+		expect(markStaleActiveRows(db, [], new Map(), beforeProbe)).toBe(0);
+
+		expect(statusOf(db, "t-bare")).toBe("active");
+		expect(bindingOf(db, "t-bare")?.endedAt).toBeNull();
+	});
+
+	it("sweeps when the session it captured is still the one bound", () => {
+		const db = createTestDb();
+		seed(db, { id: "t-lost" });
+
+		expect(
+			markStaleActiveRows(
+				db,
+				[],
+				new Map(),
+				snapshotTerminalAgentBindingSessionIds(db),
+			),
+		).toBe(1);
+
+		expect(statusOf(db, "t-lost")).toBe("exited");
+		expect(
+			findResumeCandidateBinding(db, "ws-1", "t-lost")?.agentSessionId,
+		).toBe("sess-1");
+	});
+
+	it("still sweeps a stale row that never had an agent binding", () => {
+		const db = createTestDb();
+		seed(db, { id: "t-no-agent", binding: null });
+
+		expect(
+			markStaleActiveRows(
+				db,
+				[],
+				new Map(),
+				snapshotTerminalAgentBindingSessionIds(db),
+			),
+		).toBe(1);
+
+		expect(statusOf(db, "t-no-agent")).toBe("exited");
+		expect(bindingOf(db, "t-no-agent")).toBeUndefined();
+	});
+
+	it("leaves a binding with no agent session id, and its row, for later", () => {
+		const db = createTestDb();
+		seed(db, { id: "t-idless", binding: { agentSessionId: null } });
+
+		expect(
+			markStaleActiveRows(
+				db,
+				[],
+				new Map(),
+				snapshotTerminalAgentBindingSessionIds(db),
+			),
+		).toBe(0);
+
+		// No concrete session id is no baseline to claim ownership by — the
+		// same reason `sweepAgentBindingsAfterDaemonLoss` leaves those
+		// bindings untouched — and an `exited` row would strand a replacement
+		// this pass cannot rule out.
+		expect(statusOf(db, "t-idless")).toBe("active");
+		expect(bindingOf(db, "t-idless")?.endedAt).toBeNull();
 	});
 
 	it("does not overwrite an older clean detach", () => {
