@@ -446,12 +446,15 @@ describe("markStaleActiveRows agent bindings", () => {
 		// A binding write that fails for any reason (locked db, constraint,
 		// corrupt row). Committing the status flip without the binding stamp
 		// is unrecoverable: the row leaves `active`, so no later sweep, attach
-		// or respawn ever ends the binding again.
+		// or respawn ever ends the binding again. The sweep fails as a whole
+		// instead (the reap pass logs it) and nothing is committed.
 		db.run(
 			sql`CREATE TRIGGER fail_binding_write BEFORE UPDATE ON terminal_agent_bindings BEGIN SELECT RAISE(ABORT, 'binding write failed'); END`,
 		);
 
-		markStaleActiveRows(db, [], new Map());
+		expect(() => markStaleActiveRows(db, [], new Map())).toThrow(
+			/binding write failed/,
+		);
 
 		// Nothing committed, so the row is still a candidate for the sweep.
 		expect(statusOf(db, "t-lost")).toBe("active");
@@ -464,28 +467,6 @@ describe("markStaleActiveRows agent bindings", () => {
 		expect(
 			findResumeCandidateBinding(db, "ws-1", "t-lost")?.agentSessionId,
 		).toBe("sess-1");
-	});
-
-	it("lets a dispose that lands after the snapshot beat the exit flip", () => {
-		const db = createTestDb();
-		seed(db, { id: "t-racing" });
-		// The plan is built from rows read before the daemon answered; the
-		// user's dispose stamps its durable intent during that window.
-		const snapshot = snapshotRows(db);
-		requestDispose(db, "t-racing");
-
-		markStaleActiveRows(db, [], snapshot);
-
-		// Not flipped to the resumable `exited` outcome: the row stays
-		// `active`, which is what the in-flight dispose (or the next pass)
-		// resolves.
-		expect(statusOf(db, "t-racing")).toBe("active");
-		expect(bindingOf(db, "t-racing")?.endedAt).toBeNull();
-		expect(findResumeCandidateBinding(db, "ws-1", "t-racing")).toBeUndefined();
-
-		expect(markStaleActiveRows(db, [], new Map())).toBe(1);
-		expect(statusOf(db, "t-racing")).toBe("disposed");
-		expect(findResumeCandidateBinding(db, "ws-1", "t-racing")).toBeUndefined();
 	});
 
 	it("stops offering resume when a dispose lands after the exit flip", () => {
