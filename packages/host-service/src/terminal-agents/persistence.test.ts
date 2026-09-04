@@ -13,7 +13,6 @@ import {
 	markTerminalAgentBindingEnded,
 	SqliteTerminalAgentBindingPersistence,
 	seedEndedTerminalAgentBinding,
-	snapshotTerminalAgentBindingSessionIds,
 	unclaimResumeCandidateBinding,
 } from "./persistence";
 import { TerminalAgentStore } from "./store";
@@ -381,6 +380,34 @@ describe("binding end marking and resume candidates", () => {
 		).toEqual({ endedAt: 42, agentSessionId: "sess-t1" });
 	});
 
+	it("a dispose leaves a resumed claim and a clean detach as they are", () => {
+		// Resume cleanup disposes the dead terminal after the claim, and a pane
+		// close after a real quit disposes a detached one; neither is a resume
+		// candidate, so the override has nothing to protect and the row keeps
+		// the reason that tells its history.
+		const db = createTestDb();
+		const endReasonOf = (id: string) =>
+			db
+				.select({ endReason: terminalAgentBindings.endReason })
+				.from(terminalAgentBindings)
+				.where(eq(terminalAgentBindings.terminalId, id))
+				.get()?.endReason;
+		seedWithSessionId(db, "t-resumed");
+		markTerminalAgentBindingEnded(db, "t-resumed", "terminal-exited", 42);
+		expect(claimResumeCandidateBinding(db, "ws-1", "t-resumed")).toBeDefined();
+		expect(
+			markTerminalAgentBindingEnded(db, "t-resumed", "disposed", 90),
+		).toBeUndefined();
+		expect(endReasonOf("t-resumed")).toBe("resumed");
+
+		seedWithSessionId(db, "t-detached");
+		markTerminalAgentBindingEnded(db, "t-detached", "detached", 42);
+		expect(
+			markTerminalAgentBindingEnded(db, "t-detached", "disposed", 90_000),
+		).toBeUndefined();
+		expect(endReasonOf("t-detached")).toBe("detached");
+	});
+
 	it("a claimed row survives late terminal-death marking untouched", () => {
 		// Disposing the dead terminal after a successful resume routes through
 		// markTerminalExited — that must not resurrect the candidate.
@@ -504,34 +531,5 @@ describe("seedEndedTerminalAgentBinding (v1 pane migration)", () => {
 				agentSessionId: "sess-v1",
 			}),
 		).toBe("terminal-not-found");
-	});
-});
-
-describe("snapshotTerminalAgentBindingSessionIds", () => {
-	it("tells a bound session, a binding without one, and no binding apart", () => {
-		const db = createTestDb();
-		// seedSession's binding carries no agentSessionId.
-		seedSession(db, { id: "t-idless", status: "active", workspaceId: "ws-1" });
-		seedSession(db, { id: "t-bound", status: "active", workspaceId: "ws-1" });
-		db.update(terminalAgentBindings)
-			.set({ agentSessionId: "sess-1" })
-			.where(eq(terminalAgentBindings.terminalId, "t-bound"))
-			.run();
-		db.insert(terminalSessions)
-			.values({
-				id: "t-unbound",
-				status: "active",
-				originWorkspaceId: "ws-1",
-				createdAt: 1,
-			})
-			.run();
-
-		const snapshot = snapshotTerminalAgentBindingSessionIds(db);
-
-		// A caller ending bindings after an async probe needs all three apart:
-		// only `undefined` means "nothing to strand here".
-		expect(snapshot.get("t-bound")).toBe("sess-1");
-		expect(snapshot.get("t-idless")).toBeNull();
-		expect(snapshot.has("t-unbound")).toBe(false);
 	});
 });
