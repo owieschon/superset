@@ -64,13 +64,9 @@ function rowToBinding(row: BindingRow): TerminalAgentBinding {
  */
 const DEATH_GASP_DETACH_WINDOW_MS = 30_000;
 
-/**
- * The db surface these helpers need: the root handle or an open transaction,
- * so a caller that also writes the terminal row can read and stamp the
- * binding inside that same transaction.
- */
-export type BindingReader = Pick<HostDb, "select">;
-export type BindingWriter = BindingReader & Pick<HostDb, "update">;
+/** The root db handle or an open transaction, so a caller that also writes
+ * the terminal row can stamp the binding inside that same transaction. */
+export type BindingDb = Pick<HostDb, "select" | "update">;
 
 /**
  * Mark a binding's agent session as ended without deleting the row, so its
@@ -81,7 +77,7 @@ export type BindingWriter = BindingReader & Pick<HostDb, "update">;
  * the workspaceId when a row was updated.
  */
 export function markTerminalAgentBindingEnded(
-	db: BindingWriter,
+	db: BindingDb,
 	terminalId: string,
 	reason: TerminalAgentEndReason,
 	endedAt: number = Date.now(),
@@ -98,21 +94,18 @@ export function markTerminalAgentBindingEnded(
 	if (!row) return undefined;
 
 	if (row.endedAt !== null) {
+		// Two upgrades may rewrite an ended row's reason (never its `endedAt`):
+		// a detach inside the death-gasp window was the agent's goodbye as its
+		// pty died, and a dispose after "terminal-exited" is the user killing a
+		// session auto-resume would otherwise bring back. "resumed" and an
+		// older "detached" are final.
 		const isDeathGaspDetach =
 			reason === "terminal-exited" &&
 			row.endReason === "detached" &&
 			endedAt - row.endedAt <= DEATH_GASP_DETACH_WINDOW_MS;
-		// A dispose is the user ending the session, so it beats a
-		// "terminal-exited" stamp that got there first — a pty exit, or the
-		// reaper sweeping the row after daemon loss — which would otherwise
-		// leave the killed session a resume candidate for auto-resume to bring
-		// back at the next pane mount. Only that resumable stamp is overridden:
-		// a "resumed" claim or a clean "detached" is already final and keeps
-		// its own history. Only the reason changes: `endedAt` keeps the first
-		// writer's timestamp, the same way the death-gasp upgrade does.
 		const isDisposeOfResumable =
 			reason === "disposed" && row.endReason === "terminal-exited";
-		if (!isDisposeOfResumable && !isDeathGaspDetach) return undefined;
+		if (!isDeathGaspDetach && !isDisposeOfResumable) return undefined;
 		db.update(terminalAgentBindings)
 			.set({ endReason: reason })
 			.where(eq(terminalAgentBindings.terminalId, terminalId))
@@ -129,7 +122,7 @@ export function markTerminalAgentBindingEnded(
 
 /** The agent session id a terminal's binding currently points at, if any. */
 export function getTerminalAgentBindingSessionId(
-	db: BindingReader,
+	db: HostDb,
 	terminalId: string,
 ): string | undefined {
 	const row = db

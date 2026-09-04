@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { HostDb } from "../../db/index.ts";
 import { terminalSessions } from "../../db/schema.ts";
 import { portManager } from "../../ports/port-manager.ts";
@@ -171,63 +171,15 @@ function loadTerminalRowsById(db: HostDb): Map<string, TerminalRow> {
 }
 
 /**
- * Flip one daemon-lost `active` row to `exited` and end its agent binding in
- * a single transaction, so the two can never come apart. An `exited` row is
- * the pty dying under whatever was running in it, so the binding gets the
- * same "terminal-exited" stamp the pty exit callback and the lazy respawn
- * write — that stamp is what makes the session a resume candidate.
- *
- * Both writes or neither. A committed status flip whose binding stamp was
- * lost is unrecoverable in this process: the row is no longer `active`, so
- * this sweep never reconsiders it, and an attach answers session-gone before
- * it reaches the respawn that would have ended the binding. Rolling back
- * leaves the row `active` for the next pass to retry instead.
- *
- * The flip also requires the dispose stamp to still be absent, re-read here
- * inside the transaction: {@link planStaleActiveRows} classified this row
- * from a snapshot taken before the daemon answered, and a dispose that
- * landed since must not be overwritten with the resumable `exited` outcome.
- * Such a row stays `active`, and the next pass condemns it as `disposed`.
- *
- * Returns whether the row was marked.
- */
-function markStaleExitedRow(
-	db: HostDb,
-	terminalId: string,
-	endedAt: number,
-): boolean {
-	return db.transaction((tx) => {
-		const marked = tx
-			.update(terminalSessions)
-			.set({ status: "exited", endedAt })
-			.where(
-				and(
-					eq(terminalSessions.id, terminalId),
-					eq(terminalSessions.status, "active"),
-					isNull(terminalSessions.disposeRequestedAt),
-				),
-			)
-			.returning({ id: terminalSessions.id })
-			.get();
-		if (!marked) return false;
-		markTerminalAgentBindingEnded(tx, terminalId, "terminal-exited", endedAt);
-		return true;
-	});
-}
-
-/**
  * Flip daemon-lost `active` rows to `exited` (or `disposed`, honoring a
  * pending dispose) so live-session reads stop offering ptys that no longer
- * exist, and end the exited rows' agent bindings so their sessions stay
- * resumable. A `disposed` row's binding is left alone for the same reason
- * the dispose route leaves it alone — a session the user killed must not
- * come back as a resume candidate. Returns how many rows were marked;
- * anything the plan condemned that this pass could not write stays `active`
- * for the next pass.
- *
- * A terminal respawned while the daemon probe was in flight is live in this
- * process's session map by the time the plan runs, so {@link planStaleActiveRows}
- * already leaves it — and whatever new agent session bound to it — alone.
+ * exist, and stamp the exited rows' agent bindings "terminal-exited" — the
+ * pty died under the agent, same as the pty exit callback — so their sessions
+ * become resume candidates. One transaction: an `exited` row whose binding
+ * kept its open stamp is unreachable afterwards (the sweep only revisits
+ * `active` rows and an attach answers session-gone), so the session would
+ * stay unresumable until the next boot's sweepDefunct. A `disposed` row's
+ * binding was stamped by the dispose route and must not come back.
  */
 export function markStaleActiveRows(
 	db: HostDb,
@@ -247,34 +199,30 @@ export function markStaleActiveRows(
 	if (stale.exited.length + stale.disposed.length === 0) return 0;
 	const endedAt = Date.now();
 
-	// Per row, so a failed binding write costs only its own row: that one
-	// rolls back for the next pass to retry, the rest are still swept.
-	let exited = 0;
-	for (const terminalId of stale.exited) {
-		try {
-			if (markStaleExitedRow(db, terminalId, endedAt)) exited += 1;
-		} catch (err) {
-			console.warn(
-				`[host-service] terminal reaper: left ${terminalId} active — ending its agent binding failed:`,
-				err,
-			);
+	const { exited, disposed } = db.transaction((tx) => {
+		const flip = (ids: string[], status: "exited" | "disposed") =>
+			ids.length === 0
+				? []
+				: tx
+						.update(terminalSessions)
+						.set({ status, endedAt })
+						.where(
+							and(
+								inArray(terminalSessions.id, ids),
+								eq(terminalSessions.status, "active"),
+							),
+						)
+						.returning({ id: terminalSessions.id })
+						.all();
+		const exited = flip(stale.exited, "exited");
+		for (const { id } of exited) {
+			markTerminalAgentBindingEnded(tx, id, "terminal-exited", endedAt);
 		}
-	}
-
-	let disposed = 0;
-	if (stale.disposed.length > 0) {
-		disposed = db
-			.update(terminalSessions)
-			.set({ status: "disposed", endedAt })
-			.where(
-				and(
-					inArray(terminalSessions.id, stale.disposed),
-					eq(terminalSessions.status, "active"),
-				),
-			)
-			.returning({ id: terminalSessions.id })
-			.all().length;
-	}
+		return {
+			exited: exited.length,
+			disposed: flip(stale.disposed, "disposed").length,
+		};
+	});
 
 	const total = exited + disposed;
 	if (total > 0) {
