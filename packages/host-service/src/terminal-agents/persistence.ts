@@ -102,14 +102,17 @@ export function markTerminalAgentBindingEnded(
 			reason === "terminal-exited" &&
 			row.endReason === "detached" &&
 			endedAt - row.endedAt <= DEATH_GASP_DETACH_WINDOW_MS;
-		// A dispose is the user ending the session, so it overrides whatever
-		// end reason got there first. Otherwise a "terminal-exited" stamp that
-		// beat the dispose — a pty exit, or the reaper sweeping the row after
-		// daemon loss — would leave the killed session a resume candidate and
-		// auto-resume would bring it back at the next pane mount. Only the
-		// reason changes: `endedAt` keeps the first writer's timestamp, the
-		// same way the death-gasp upgrade does.
-		if (reason !== "disposed" && !isDeathGaspDetach) return undefined;
+		// A dispose is the user ending the session, so it beats a
+		// "terminal-exited" stamp that got there first — a pty exit, or the
+		// reaper sweeping the row after daemon loss — which would otherwise
+		// leave the killed session a resume candidate for auto-resume to bring
+		// back at the next pane mount. Only that resumable stamp is overridden:
+		// a "resumed" claim or a clean "detached" is already final and keeps
+		// its own history. Only the reason changes: `endedAt` keeps the first
+		// writer's timestamp, the same way the death-gasp upgrade does.
+		const isDisposeOfResumable =
+			reason === "disposed" && row.endReason === "terminal-exited";
+		if (!isDisposeOfResumable && !isDeathGaspDetach) return undefined;
 		db.update(terminalAgentBindings)
 			.set({ endReason: reason })
 			.where(eq(terminalAgentBindings.terminalId, terminalId))
@@ -124,59 +127,17 @@ export function markTerminalAgentBindingEnded(
 	return { workspaceId: row.workspaceId };
 }
 
-/**
- * Which agent session a terminal's binding points at, as three distinct
- * answers: the session id, `null` when the binding has none, `undefined` when
- * the terminal has no binding at all. Callers that must tell "this binding
- * was replaced" from "this terminal never had one" need all three; the ones
- * that only want a concrete id use
- * {@link getTerminalAgentBindingSessionId}.
- */
-export function readTerminalAgentBindingSessionId(
-	db: BindingReader,
-	terminalId: string,
-): string | null | undefined {
-	const row = db
-		.select({ agentSessionId: terminalAgentBindings.agentSessionId })
-		.from(terminalAgentBindings)
-		.where(eq(terminalAgentBindings.terminalId, terminalId))
-		.get();
-	return row === undefined ? undefined : row.agentSessionId;
-}
-
 /** The agent session id a terminal's binding currently points at, if any. */
 export function getTerminalAgentBindingSessionId(
 	db: BindingReader,
 	terminalId: string,
 ): string | undefined {
-	return readTerminalAgentBindingSessionId(db, terminalId) ?? undefined;
-}
-
-/**
- * Every binding's agent session id, keyed by terminal, in the shape
- * {@link readTerminalAgentBindingSessionId} returns per terminal: absent from
- * the map means no binding row, `null` means a binding without a concrete
- * session id.
- *
- * A caller that ends bindings after an async probe captures this before that
- * probe starts. The probe's verdict is about the agent session bound to the
- * terminal when it began, and the session id is that session's identity — so
- * an entry that changed by write time means a different session now owns the
- * terminal and the verdict no longer applies to it. Same ownership model as
- * `sweepAgentBindingsAfterDaemonLoss`, which snapshots the same value per
- * candidate before its own daemon probe.
- */
-export function snapshotTerminalAgentBindingSessionIds(
-	db: BindingReader,
-): Map<string, string | null> {
-	const rows = db
-		.select({
-			terminalId: terminalAgentBindings.terminalId,
-			agentSessionId: terminalAgentBindings.agentSessionId,
-		})
+	const row = db
+		.select({ agentSessionId: terminalAgentBindings.agentSessionId })
 		.from(terminalAgentBindings)
-		.all();
-	return new Map(rows.map((row) => [row.terminalId, row.agentSessionId]));
+		.where(eq(terminalAgentBindings.terminalId, terminalId))
+		.get();
+	return row?.agentSessionId ?? undefined;
 }
 
 /**
