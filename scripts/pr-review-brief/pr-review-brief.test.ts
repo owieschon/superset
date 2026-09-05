@@ -354,7 +354,7 @@ describe("pr-review-brief", () => {
 			actorKind: "bot",
 		});
 		const markdown = renderMarkdown(brief);
-		expect(markdown).toContain("Formal reviews (actors may be bots)");
+		expect(markdown).toContain("Formal review history (actors may be bots)");
 		expect(markdown).toContain(
 			"Issue conversation comments and inline review comments are not collected",
 		);
