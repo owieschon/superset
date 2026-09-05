@@ -341,6 +341,246 @@ export function renderMarkdown(brief: Brief): string {
 	return `# PR review brief: ${e(brief.title)}\n\n[Pull request #${brief.target.number}](${safeLinkDestination(brief.target.url, brief.target.url)}) · collected ${brief.collectionTimestamp}\n\n- Base: \`${e(brief.baseSha)}\`\n- Head: \`${e(brief.headSha)}\`\n- Revision collection: **${brief.revisionState}**. Checks/statuses were queried using this head. Each check run retains its returned SHA; no merge-result checks are collected. Check runs use GitHub's explicit \`filter=latest\`, so older attempts are not collected. Commit statuses are endpoint history records, not a statement of current status.\n\n## Collection sources\n\n${sourceLines.join("\n")}\n\n## Changed files\n\n${fileLines.join("\n")}\n\n## Checks and statuses\n\n${checkLines.join("\n")}\n\n## Formal review history (actors may be bots)\n\n${reviewLines.join("\n")}\n\nIssue conversation comments and inline review comments are not collected, so maintainer QA reported there is absent from this brief.\n\n## Author-provided description (untrusted source)\n\n${body}\n\nAuthor statements, including test claims or statements that work was not run, are quoted above as unverified source material. Changed test files indicate files changed only—not tests executed or coverage. This brief reports records and gaps; it provides no overall readiness, safety, correctness, or pass verdict.\n`;
 }
 
+const COMPACT_ITEM_LIMIT = 3;
+const COMPACT_QUOTE_LIMIT = 180;
+
+/** A bounded, source-linked note; renderMarkdown remains the complete record. */
+export function renderCompactMarkdown(brief: Brief): string {
+	const e = (value: string) => escapeRemoteText(value.replace(/\s+/g, " "));
+	const link = (text: string, url: string | null) =>
+		`[${e(text)}](${safeLinkDestination(url ?? brief.target.url, brief.target.url)})`;
+	const checksUrl = `${brief.target.url}/checks`;
+	const commitUrl = `${brief.target.url}/commits/${brief.headSha}`;
+	const sourceProblems = brief.sources.filter(
+		(source) => source.state !== "collected",
+	);
+	const checkRuns = brief.checks.filter((check) => check.kind === "check-run");
+	const confirmedRuns = checkRuns.filter(
+		(check) => check.headShaConfirmation === "confirmed",
+	);
+	const provenanceGaps = checkRuns.filter(
+		(check) => check.headShaConfirmation !== "confirmed",
+	);
+	const attentionRuns = uniqueChecks([
+		...checkRuns.filter(isAttentionCheck),
+		...provenanceGaps,
+	]);
+	const statusHistory = brief.checks.filter(
+		(check) => check.kind === "commit-status",
+	);
+	const testPaths = brief.files.filter((file) =>
+		isTestFile(file.filename),
+	).length;
+	const excerpts = validationExcerpts(brief.authorBody);
+	const lines = [
+		`# ${e(brief.title)}`,
+		"",
+		`${link(`PR #${brief.target.number}`, brief.target.url)} · ${link(`head ${abbreviateSha(brief.headSha)}`, commitUrl)} · collected ${e(brief.collectionTimestamp)}`,
+		"",
+	];
+	const attention: string[] = [];
+	if (sourceProblems.length)
+		attention.push(
+			`- Incomplete sources: ${formatBounded(sourceProblems, (source) => `${link(source.name, source.url)} ${e(source.state)}`, brief.target.url)}.`,
+		);
+	else if (brief.revisionState === "incomplete")
+		attention.push(
+			`- Collection incomplete; ${link("inspect sources", brief.target.url)}.`,
+		);
+	if (attentionRuns.length)
+		attention.push(
+			`- Check records: ${formatBounded(attentionRuns, (check) => compactCheck(check, link), checksUrl)}.`,
+		);
+	for (const excerpt of excerpts)
+		attention.push(
+			`- PR description (unverified): “${e(excerpt.text)}”${excerpt.clipped ? " (clipped)" : ""} ${link("source", brief.target.url)}`,
+		);
+	if (attention.length)
+		lines.push("**Review attention**", "", ...attention, "");
+	lines.push(
+		"**Recorded evidence**",
+		"",
+		`- **Changed files:** ${brief.files.length}; ${testPaths} test paths. ${link("diff", `${brief.target.url}/files`)}`,
+		`- **Check runs at head:** ${formatCheckCounts(confirmedRuns)}. ${link("checks", checksUrl)}`,
+	);
+	if (provenanceGaps.length)
+		lines.push(
+			`- **Missing/mismatched head:** ${formatCheckCounts(provenanceGaps)}. ${link("checks", checksUrl)}`,
+		);
+	lines.push(
+		`- **Commit-status history:** ${formatStateCounts(statusHistory)}; not current CI. ${link("records", commitUrl)}`,
+	);
+	const humans = brief.reviews.filter((review) => review.actorKind === "human");
+	const bots = brief.reviews.filter((review) => review.actorKind === "bot");
+	const unknown = brief.reviews.filter(
+		(review) => review.actorKind !== "human" && review.actorKind !== "bot",
+	);
+	lines.push(
+		`- **Formal review history:** ${humans.length} human, ${bots.length} bot${unknown.length ? `, ${unknown.length} unknown actor` : ""} records. ${link("reviews", brief.target.url)}`,
+	);
+	const reviewerRecords = [...humans, ...unknown];
+	if (reviewerRecords.length)
+		lines.push(
+			`- ${formatBounded(reviewerRecords, (review) => `${link(review.actorLogin ?? "unknown actor", review.url)}: ${e(review.state)} record; ${reviewCommitMatch(review, brief.headSha)}`, brief.target.url)}.`,
+		);
+	if (!excerpts.length)
+		lines.push(
+			`- ${link("PR description and validation claims", brief.target.url)} (unverified; no unperformed-validation excerpt selected).`,
+		);
+	lines.push(
+		"",
+		"Scope: comments, older check-run attempts, merge-result checks and test logs were not inspected. Test paths are not execution evidence; review history is not a current approval decision.",
+		"",
+		"Full records: `--full` (Markdown) or `--json`.",
+	);
+	return `${lines.join("\n")}\n`;
+}
+
+function isAttentionCheck(check: Brief["checks"][number]): boolean {
+	const state = compactCheckState(check).toLowerCase();
+	return (
+		[
+			"failure",
+			"failed",
+			"pending",
+			"in_progress",
+			"neutral",
+			"skipped",
+			"unknown",
+		].includes(state) || !["success", "completed"].includes(state)
+	);
+}
+
+function uniqueChecks(checks: Brief["checks"]): Brief["checks"] {
+	return [...new Set(checks)];
+}
+
+function compactCheckState(check: Brief["checks"][number]): string {
+	if (check.status === "completed" && check.conclusion == null)
+		return "completed; conclusion not reported";
+	return check.conclusion ?? check.status ?? check.state;
+}
+
+function compactCheck(
+	check: Brief["checks"][number],
+	link: (text: string, url: string | null) => string,
+): string {
+	const state = compactCheckState(check);
+	const provenance =
+		check.headShaConfirmation === "missing"
+			? "reported head missing"
+			: check.headShaConfirmation === "mismatch"
+				? `reported head ${escapeRemoteText(abbreviateSha(check.headSha ?? "unknown"))} mismatch`
+				: check.headShaConfirmation === "confirmed"
+					? "confirmed head"
+					: "head provenance unknown";
+	return `${link(check.name, check.url)} ${escapeRemoteText(state)} (${provenance})`;
+}
+
+function formatCheckCounts(checks: Brief["checks"]): string {
+	if (!checks.length) return "none";
+	return formatCounts(checks.map(compactCheckState));
+}
+
+function formatStateCounts(checks: Brief["checks"]): string {
+	if (!checks.length) return "none recorded";
+	return formatCounts(checks.map((check) => check.state));
+}
+
+function formatCounts(values: string[]): string {
+	return [...new Map(values.map((value) => [value, 0])).keys()]
+		.map(
+			(value) =>
+				`${escapeRemoteText(value)} ${values.filter((item) => item === value).length}`,
+		)
+		.join(", ");
+}
+
+function formatBounded<T>(
+	items: T[],
+	format: (item: T) => string,
+	moreUrl: string,
+): string {
+	if (!items.length) return "none recorded";
+	const displayed = items.slice(0, COMPACT_ITEM_LIMIT).map(format);
+	const more = items.length - displayed.length;
+	return `${displayed.join("; ")}${more ? `; [${more} more](${safeLinkDestination(moreUrl, moreUrl)})` : ""}`;
+}
+
+function reviewCommitMatch(
+	review: Brief["reviews"][number],
+	headSha: string,
+): string {
+	if (!review.commitId) return "commit not recorded";
+	return review.commitId === headSha
+		? `commit ${escapeRemoteText(abbreviateSha(review.commitId))} matches head`
+		: `commit ${escapeRemoteText(abbreviateSha(review.commitId))} differs from head`;
+}
+
+function abbreviateSha(sha: string): string {
+	return sha.slice(0, 10);
+}
+
+function validationExcerpts(
+	body: string | null,
+): Array<{ text: string; clipped: boolean }> {
+	if (!body) return [];
+	const lines = body
+		.replaceAll("\r\n", "\n")
+		.replaceAll("\r", "\n")
+		.split("\n");
+	const selected: Array<{ text: string; clipped: boolean }> = [];
+	let fence: string | null = null;
+	let inValidation = false;
+	let inGenerated = false;
+	for (const rawLine of lines) {
+		const line = rawLine.trim();
+		const fenceLine = line.match(/^(`{3,}|~{3,})(.*)$/);
+		if (fenceLine) {
+			if (!fence) fence = fenceLine[1];
+			else if (
+				fenceLine[1]?.[0] === fence[0] &&
+				fenceLine[1].length >= fence.length &&
+				!fenceLine[2]?.trim()
+			)
+				fence = null;
+			continue;
+		}
+		if (fence) continue;
+		if (/^<!--\s*end (?:of )?(?:auto-generated|bot summary)/i.test(line)) {
+			inGenerated = false;
+			continue;
+		}
+		if (
+			/^<!--.*(?:auto-generated|bot summary)|^#{1,6}\s+summary by\b/i.test(line)
+		) {
+			inGenerated = true;
+			continue;
+		}
+		if (inGenerated) continue;
+		if (/^#{1,6}\s+/.test(line)) {
+			inValidation =
+				/manual qa|validation|verification|testing|test plan|how\b.*\btest(?:ed|ing)?\b/i.test(
+					line,
+				);
+			continue;
+		}
+		if (
+			!inValidation ||
+			!line ||
+			!/(not run|not tested|not executed|not validate|not verified)/i.test(line)
+		)
+			continue;
+		const text = line.replace(/^[-*]\s+(?:\[[ xX]\]\s+)?/, "");
+		selected.push({
+			text: text.slice(0, COMPACT_QUOTE_LIMIT),
+			clipped: text.length > COMPACT_QUOTE_LIMIT,
+		});
+		if (selected.length === 3) break;
+	}
+	return selected;
+}
+
 function isTestFile(path: string): boolean {
 	// Selectively reused from origin/feature/native-review-evidence's parse-pr-diff.ts.
 	return /(^|\/)__tests__\/|\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)test_[^/]+\.py$|_test\.(go|py|rb)$|(^|\/)[^/]+_spec\.rb$/.test(
