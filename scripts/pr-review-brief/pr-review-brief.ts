@@ -34,13 +34,22 @@ export interface Brief {
 		kind: "check-run" | "commit-status";
 		state: string;
 		url: string | null;
-		headSha: string;
+		headSha: string | null;
+		status?: string;
+		conclusion?: string | null;
+		headShaConfirmation?: "confirmed" | "missing" | "mismatch";
+		createdAt?: string | null;
+		updatedAt?: string | null;
+		historical?: boolean;
 	}>;
 	reviews: Array<{
 		id: number;
 		state: string;
 		commitId: string | null;
 		url: string;
+		actorLogin: string | null;
+		actorType: string | null;
+		actorKind: "bot" | "human" | "unknown";
 	}>;
 	authorBody: string | null;
 }
@@ -125,6 +134,7 @@ export async function collectBrief(
 		id: number;
 		state: string;
 		commit_id: string | null;
+		user?: { login?: string | null; type?: string | null } | null;
 	}>(
 		api,
 		`${repoPath}/pulls/${target.number}/reviews`,
@@ -136,6 +146,10 @@ export async function collectBrief(
 	if (first.head.sha !== second.head.sha)
 		throw new Error(
 			`Pull request head changed during collection (${first.head.sha} → ${second.head.sha}); no complete brief was produced`,
+		);
+	if (first.base.sha !== second.base.sha)
+		throw new Error(
+			`Pull request base changed during collection (${first.base.sha} → ${second.base.sha}); no complete brief was produced`,
 		);
 	return {
 		collectionTimestamp: now.toISOString(),
@@ -154,6 +168,9 @@ export async function collectBrief(
 			state: review.state,
 			commitId: review.commit_id,
 			url: `${target.url}#pullrequestreview-${review.id}`,
+			actorLogin: review.user?.login ?? null,
+			actorType: review.user?.type ?? null,
+			actorKind: reviewActorKind(review.user?.type),
 		})),
 		authorBody: first.body,
 	};
@@ -171,9 +188,10 @@ async function collectChecks(
 		status: string;
 		conclusion: string | null;
 		details_url: string | null;
+		head_sha?: string | null;
 	}>(
 		api,
-		`${repoPath}/commits/${sha}/check-runs`,
+		`${repoPath}/commits/${sha}/check-runs?filter=latest`,
 		"check runs",
 		`${target.url}/checks`,
 		sources,
@@ -183,6 +201,8 @@ async function collectChecks(
 		context: string;
 		state: string;
 		target_url: string | null;
+		created_at?: string | null;
+		updated_at?: string | null;
 	}>(
 		api,
 		`${repoPath}/commits/${sha}/statuses`,
@@ -195,9 +215,12 @@ async function collectChecks(
 			...runs.items.map((run) => ({
 				name: run.name,
 				kind: "check-run" as const,
-				state: checkRunState(run.status, run.conclusion),
+				state: run.conclusion ?? (run.status || "unknown"),
+				status: run.status || "unknown",
+				conclusion: run.conclusion,
 				url: run.details_url ?? `${target.url}/checks`,
-				headSha: sha,
+				headSha: run.head_sha ?? null,
+				headShaConfirmation: checkRunHeadShaConfirmation(run.head_sha, sha),
 			})),
 			...statuses.items.map((status) => ({
 				name: status.context,
@@ -205,23 +228,28 @@ async function collectChecks(
 				state: status.state || "unknown",
 				url: status.target_url ?? `${target.url}/commits/${sha}`,
 				headSha: sha,
+				createdAt: status.created_at ?? null,
+				updatedAt: status.updated_at ?? null,
+				historical: true,
 			})),
 		],
 	};
 }
 
-function checkRunState(status: string, conclusion: string | null): string {
-	if (status !== "completed") return status || "unknown";
-	if (conclusion === "success") return "success";
-	if (
-		["failure", "timed_out", "action_required", "startup_failure"].includes(
-			conclusion ?? "",
-		)
-	)
-		return "failure";
-	if (["neutral", "skipped"].includes(conclusion ?? "")) return "skipped";
-	if (conclusion === "cancelled") return "cancelled";
-	return conclusion || "unknown";
+function checkRunHeadShaConfirmation(
+	headSha: string | null | undefined,
+	queriedSha: string,
+): "confirmed" | "missing" | "mismatch" {
+	if (!headSha) return "missing";
+	return headSha === queriedSha ? "confirmed" : "mismatch";
+}
+
+function reviewActorKind(
+	actorType: string | null | undefined,
+): "bot" | "human" | "unknown" {
+	if (actorType?.toLowerCase() === "bot") return "bot";
+	if (actorType?.toLowerCase() === "user") return "human";
+	return "unknown";
 }
 
 async function collectPages<T>(
@@ -235,8 +263,9 @@ async function collectPages<T>(
 	const items: T[] = [];
 	for (let page = 1; page <= MAX_PAGES; page++) {
 		try {
+			const separator = base.includes("?") ? "&" : "?";
 			const raw = (await api(
-				`${base}?per_page=${PAGE_SIZE}&page=${page}`,
+				`${base}${separator}per_page=${PAGE_SIZE}&page=${page}`,
 			)) as unknown;
 			const value = property ? (raw as Record<string, unknown>)[property] : raw;
 			if (!Array.isArray(value)) throw new Error("response was not a list");
@@ -265,9 +294,11 @@ async function collectPages<T>(
 }
 
 export function renderMarkdown(brief: Brief): string {
-	const e = escapeMarkdown;
+	const e = escapeRemoteText;
 	const link = (text: string, url: string | null) =>
-		url ? `[${e(text)}](${url})` : e(text);
+		url
+			? `[${e(text)}](${safeLinkDestination(url, brief.target.url)})`
+			: e(text);
 	const sourceLines = brief.sources.map(
 		(source) =>
 			`- ${link(source.name, source.url)} — **${source.state}**${source.detail ? `: ${e(source.detail)}` : ""}`,
@@ -279,32 +310,67 @@ export function renderMarkdown(brief: Brief): string {
 			)
 		: ["- No changed-file records were collected."];
 	const checkLines = brief.checks.length
-		? brief.checks.map(
-				(check) =>
-					`- ${link(check.name, check.url)} — **${e(check.state)}** (${check.kind}; recorded for head \`${check.headSha}\`)`,
-			)
+		? brief.checks.map((check) => {
+				if (check.kind === "check-run") {
+					const reportedSha = check.headSha
+						? `reported head \`${e(check.headSha)}\``
+						: "reported head missing";
+					const confirmation = check.headShaConfirmation
+						? `; head provenance **${e(check.headShaConfirmation)}**`
+						: "";
+					return `- ${link(check.name, check.url)} — status **${e(check.status ?? check.state)}**; conclusion **${e(check.conclusion ?? "not reported")}** (${check.kind}; ${reportedSha}${confirmation})`;
+				}
+				return `- ${link(check.name, check.url)} — state **${e(check.state)}** (${check.kind}; historical status record; created ${e(check.createdAt ?? "not reported")}; updated ${e(check.updatedAt ?? "not reported")})`;
+			})
 		: ["- No check/status records were collected."];
 	const reviewLines = brief.reviews.length
 		? brief.reviews.map(
 				(review) =>
-					`- ${link(`review ${review.id}`, review.url)} — **${e(review.state)}**; commit ${review.commitId ? `\`${review.commitId}\`` : "not recorded"}${review.commitId !== brief.headSha ? " (not confirmed for collected head)" : ""}`,
+					`- ${link(`review ${review.id}`, review.url)} — **${e(review.state)}**; actor ${e(review.actorLogin ?? "not recorded")} (GitHub actor type: ${e(review.actorType ?? "not recorded")}; classified ${review.actorKind === "bot" ? "bot" : review.actorKind === "human" ? "human" : "unknown"}); commit ${review.commitId ? `\`${e(review.commitId)}\`` : "not recorded"}${review.commitId !== brief.headSha ? " (not confirmed for collected head)" : ""}`,
 			)
 		: ["- No review records were collected."];
 	const body =
 		brief.authorBody === null
 			? "> _No author body was provided._"
 			: brief.authorBody
+					.replaceAll("\r\n", "\n")
+					.replaceAll("\r", "\n")
 					.split("\n")
-					.map((line) => `> ${escapeMarkdown(line).replaceAll(">", "\\>")}`)
+					.map((line) => `> ${escapeRemoteText(line)}`)
 					.join("\n");
-	return `# PR review brief: ${e(brief.title)}\n\n[Pull request #${brief.target.number}](${brief.target.url}) · collected ${brief.collectionTimestamp}\n\n- Base: \`${brief.baseSha}\`\n- Head: \`${brief.headSha}\`\n- Revision collection: **${brief.revisionState}**. Checks/statuses are recorded for this head; they do not describe a merge result.\n\n## Collection sources\n\n${sourceLines.join("\n")}\n\n## Changed files\n\n${fileLines.join("\n")}\n\n## Checks and statuses\n\n${checkLines.join("\n")}\n\n## Human reviews\n\n${reviewLines.join("\n")}\n\n## Author-provided description (untrusted source)\n\n${body}\n\nAuthor statements, including test claims or statements that work was not run, are quoted above as unverified source material. Changed test files indicate files changed only—not tests executed or coverage. This brief reports records and gaps; it provides no overall readiness, safety, correctness, or pass verdict.\n`;
+	return `# PR review brief: ${e(brief.title)}\n\n[Pull request #${brief.target.number}](${safeLinkDestination(brief.target.url, brief.target.url)}) · collected ${brief.collectionTimestamp}\n\n- Base: \`${e(brief.baseSha)}\`\n- Head: \`${e(brief.headSha)}\`\n- Revision collection: **${brief.revisionState}**. Checks/statuses are recorded for this head; they do not describe a merge result. Check runs use GitHub's explicit \`filter=latest\`, so older attempts are not collected. Commit statuses are endpoint history records, not a statement of current status.\n\n## Collection sources\n\n${sourceLines.join("\n")}\n\n## Changed files\n\n${fileLines.join("\n")}\n\n## Checks and statuses\n\n${checkLines.join("\n")}\n\n## Formal reviews (actors may be bots)\n\n${reviewLines.join("\n")}\n\nIssue conversation comments and inline review comments are not collected, so maintainer QA reported there is absent from this brief.\n\n## Author-provided description (untrusted source)\n\n${body}\n\nAuthor statements, including test claims or statements that work was not run, are quoted above as unverified source material. Changed test files indicate files changed only—not tests executed or coverage. This brief reports records and gaps; it provides no overall readiness, safety, correctness, or pass verdict.\n`;
 }
 
 function isTestFile(path: string): boolean {
-	return /(^|\/)__tests__\/|\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)test_[^/]+\.py$|_test\.(go|py|rb)$/.test(
+	// Selectively reused from origin/feature/native-review-evidence's parse-pr-diff.ts.
+	return /(^|\/)__tests__\/|\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)test_[^/]+\.py$|_test\.(go|py|rb)$|(^|\/)[^/]+_spec\.rb$/.test(
 		path,
 	);
 }
-function escapeMarkdown(value: string): string {
-	return value.replaceAll("\\", "\\\\").replace(/[[\]`*_]/g, "\\$&");
+
+function escapeRemoteText(value: string): string {
+	return value
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll("\\", "\\\\")
+		.replace(/[![\]`()_*]/g, "\\$&");
+}
+
+function safeLinkDestination(value: string, fallback: string): string {
+	try {
+		const url = new URL(value);
+		if (url.protocol !== "http:" && url.protocol !== "https:")
+			throw new Error();
+		return url
+			.toString()
+			.replaceAll("(", "%28")
+			.replaceAll(")", "%29")
+			.replaceAll("[", "%5B")
+			.replaceAll("]", "%5D")
+			.replaceAll("<", "%3C")
+			.replaceAll(">", "%3E");
+	} catch {
+		return fallback;
+	}
 }
