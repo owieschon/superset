@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { parseCliOptions } from "./cli-options";
 import {
 	type Api,
 	collectBrief,
 	parsePublicPullRequestUrl,
+	renderCompactMarkdown,
 	renderMarkdown,
 } from "./pr-review-brief";
 
@@ -25,7 +27,7 @@ function apiWith(overrides: Record<string, unknown> = {}): Api {
 					}
 				: {
 						title: "Unsafe [title]",
-						body: "- Tests not run: `manual QA`\n- ran tests for src/a.test.ts",
+						body: "## Testing\n- Tests not run: `manual QA`\n- ran tests for src/a.test.ts",
 						html_url: target.url,
 						head: { sha: head },
 						base: { sha: "base" },
@@ -76,6 +78,17 @@ function apiWith(overrides: Record<string, unknown> = {}): Api {
 }
 
 describe("pr-review-brief", () => {
+	test("keeps JSON and full modes explicit while defaulting to compact", () => {
+		const input = "https://github.com/acme/widgets/pull/8";
+		expect(parseCliOptions([input])).toEqual({ mode: "compact", input });
+		expect(parseCliOptions(["--full", input])).toEqual({ mode: "full", input });
+		expect(parseCliOptions(["--json", input])).toEqual({ mode: "json", input });
+		expect(parseCliOptions(["--json", "--full", input])).toEqual({
+			mode: "invalid",
+		});
+		expect(parseCliOptions(["--help"])).toEqual({ mode: "help" });
+	});
+
 	test("accepts only canonical public github pull URLs", () => {
 		expect(
 			parsePublicPullRequestUrl("https://github.com/acme/widgets/pull/8")
@@ -381,5 +394,140 @@ describe("pr-review-brief", () => {
 			authorBody: null,
 		} as never);
 		expect((markdown.match(/test file changed/g) ?? []).length).toBe(5);
+	});
+
+	test("renders a bounded compact note with attention items and no body dump", async () => {
+		const brief = await collectBrief(
+			target,
+			apiWith(),
+			new Date("2026-09-05T00:00:00Z"),
+		);
+		const compact = renderCompactMarkdown(brief);
+		expect(compact.split("\n").length).toBeLessThanOrEqual(35);
+		expect(compact.split(/\s+/).length).toBeLessThanOrEqual(350);
+		expect(compact).toContain("failure");
+		expect(compact).toContain("in\\_progress");
+		expect(compact).toContain("skipped");
+		expect(compact).toContain("mystery");
+		expect(compact).toContain("reported head missing");
+		expect(compact).toContain("PR description (unverified)");
+		expect(compact).toContain("Tests not run");
+		expect(compact).not.toContain("ran tests for src/a.test.ts");
+		expect(compact).not.toContain("## Author-provided description");
+		expect(compact).toContain("Commit-status history");
+		expect(compact).toContain("1 unknown actor");
+		expect(renderMarkdown(brief)).toContain("review 12");
+	});
+
+	test("makes compact omissions, incomplete sources, review actors, hostile text, and #7166's not-run line visible", () => {
+		const compact = renderCompactMarkdown({
+			collectionTimestamp: "2026-09-05T00:00:00Z",
+			target,
+			title: "<img> [hostile]",
+			headSha: "abcdef0123456789",
+			baseSha: "base",
+			revisionState: "incomplete",
+			sources: [
+				{ name: "reviews", url: target.url, state: "unavailable" },
+				{ name: "files", url: target.url, state: "truncated" },
+			],
+			files: Array.from({ length: 7 }, (_, index) => ({
+				filename: `src/${index}.test.ts`,
+				status: "modified",
+			})),
+			checks: Array.from({ length: 7 }, (_, index) => ({
+				name: `<check-${index}>`,
+				kind: "check-run" as const,
+				state: "failure",
+				status: "completed",
+				conclusion: "failure",
+				url: "javascript:boom",
+				headSha: index === 0 ? "other" : "abcdef0123456789",
+				headShaConfirmation: index === 0 ? "mismatch" : "confirmed",
+			})),
+			reviews: [
+				{
+					id: 1,
+					state: "APPROVED",
+					commitId: "old",
+					url: target.url,
+					actorLogin: "bot",
+					actorType: "Bot",
+					actorKind: "bot",
+				},
+				{
+					id: 2,
+					state: "COMMENTED",
+					commitId: "abcdef0123456789",
+					url: target.url,
+					actorLogin: "person",
+					actorType: "User",
+					actorKind: "human",
+				},
+			],
+			authorBody:
+				"## Validation\nNot run against the live app; do not treat this as tested.\n```\nTests not run in code\n```\n<!-- bot summary -->\nTests passed",
+		});
+		expect(compact).toContain("Incomplete sources");
+		expect(compact).toContain("truncated");
+		expect(compact).toContain("reported head other mismatch");
+		expect(compact).toContain("4 more");
+		expect(compact).toContain("bot");
+		expect(compact).toContain("human");
+		expect(compact).toContain("Not run against the live app");
+		expect(compact).not.toContain("Tests not run in code");
+		expect(compact).not.toContain("<img>");
+	});
+	test("preserves disclosures under the real PR template and skips both fence types", async () => {
+		const brief = await collectBrief(target, apiWith());
+		brief.authorBody =
+			"## How I tested it\n- 8 pre-existing todo tests were not run\n~~~text\nNot tested inside tilde fence\n~~~\n<!-- auto-generated comment -->\nNot tested by bot\n<!-- end of auto-generated comment -->\n- Integration not tested after summary\n````text\n```\nNot run inside longer fence\n````";
+		const compact = renderCompactMarkdown(brief);
+		expect(compact).toContain("8 pre-existing todo tests were not run");
+		expect(compact).toContain("Integration not tested after summary");
+		expect(compact).not.toContain("inside tilde fence");
+		expect(compact).not.toContain("Not tested by bot");
+		expect(compact).not.toContain("inside longer fence");
+	});
+
+	test("keeps different runs with the same name and flags missing conclusions", async () => {
+		const brief = await collectBrief(target, apiWith());
+		brief.checks = [
+			{
+				name: "test",
+				kind: "check-run",
+				state: "failure",
+				status: "completed",
+				conclusion: "failure",
+				url: "https://ci/jobs/1",
+				headSha: head,
+				headShaConfirmation: "confirmed",
+			},
+			{
+				name: "test",
+				kind: "check-run",
+				state: "failure",
+				status: "completed",
+				conclusion: "failure",
+				url: "https://ci/jobs/2",
+				headSha: "old",
+				headShaConfirmation: "mismatch",
+			},
+			{
+				name: "unknown",
+				kind: "check-run",
+				state: "completed",
+				status: "completed",
+				conclusion: null,
+				url: "https://ci/jobs/3",
+				headSha: null,
+			},
+		];
+		const compact = renderCompactMarkdown(brief);
+		expect(compact).toContain("https://ci/jobs/1");
+		expect(compact).toContain("https://ci/jobs/2");
+		expect(compact).toContain("reported head old mismatch");
+		expect(compact).toContain("conclusion not reported");
+		expect(compact).toContain("head provenance unknown");
 	});
 });
