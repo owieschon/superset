@@ -93,6 +93,7 @@ function fakeHostService(ignored: boolean) {
 	};
 }
 
+/** Fake v1 host-service endpoint that records incoming requests and returns 200. */
 function fakeV1Service() {
 	const requests: Request[] = [];
 	const server = Bun.serve({
