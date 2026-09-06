@@ -139,7 +139,7 @@ export async function collectBrief(
 		api,
 		`${repoPath}/pulls/${target.number}/reviews`,
 		"reviews",
-		`${target.url}/files`,
+		target.url,
 		sources,
 	);
 	const second = (await api(`${repoPath}/pulls/${target.number}`)) as Pull;
@@ -529,11 +529,38 @@ function validationExcerpts(
 		.replaceAll("\r\n", "\n")
 		.replaceAll("\r", "\n")
 		.split("\n");
+	const generatedEndMarkers = lines.map(() => false);
+	let generatedFence: string | null = null;
+	for (let index = 0; index < lines.length; index++) {
+		const line = (lines[index] ?? "").trim();
+		const fenceLine = line.match(/^(`{3,}|~{3,})(.*)$/);
+		if (fenceLine) {
+			if (!generatedFence) generatedFence = fenceLine[1];
+			else if (
+				fenceLine[1]?.[0] === generatedFence[0] &&
+				fenceLine[1].length >= generatedFence.length &&
+				!fenceLine[2]?.trim()
+			)
+				generatedFence = null;
+			continue;
+		}
+		if (generatedFence) continue;
+		generatedEndMarkers[index] =
+			/^<!--\s*end (?:of )?(?:auto-generated|bot summary)/i.test(line);
+	}
+	const generatedEndAfter = lines.map(() => false);
+	let generatedEndAhead = false;
+	for (let index = lines.length - 1; index >= 0; index--) {
+		generatedEndAfter[index] = generatedEndAhead;
+		if (generatedEndMarkers[index]) generatedEndAhead = true;
+	}
 	const selected: Array<{ text: string; clipped: boolean }> = [];
 	let fence: string | null = null;
 	let inValidation = false;
 	let inGenerated = false;
-	for (const rawLine of lines) {
+	let generatedHasExplicitEnd = false;
+	for (let index = 0; index < lines.length; index++) {
+		const rawLine = lines[index] ?? "";
 		const line = rawLine.trim();
 		const fenceLine = line.match(/^(`{3,}|~{3,})(.*)$/);
 		if (fenceLine) {
@@ -549,22 +576,28 @@ function validationExcerpts(
 		if (fence) continue;
 		if (/^<!--\s*end (?:of )?(?:auto-generated|bot summary)/i.test(line)) {
 			inGenerated = false;
+			generatedHasExplicitEnd = false;
 			continue;
 		}
 		if (
 			/^<!--.*(?:auto-generated|bot summary)|^#{1,6}\s+summary by\b/i.test(line)
 		) {
 			inGenerated = true;
+			generatedHasExplicitEnd = generatedEndAfter[index] ?? false;
 			continue;
 		}
-		if (inGenerated) continue;
 		if (/^#{1,6}\s+/.test(line)) {
-			inValidation =
+			const isValidationHeading =
 				/manual qa|validation|verification|testing|test plan|how\b.*\btest(?:ed|ing)?\b/i.test(
 					line,
 				);
+			if (inGenerated && (generatedHasExplicitEnd || !isValidationHeading))
+				continue;
+			inGenerated = false;
+			inValidation = isValidationHeading;
 			continue;
 		}
+		if (inGenerated) continue;
 		if (
 			!inValidation ||
 			!line ||

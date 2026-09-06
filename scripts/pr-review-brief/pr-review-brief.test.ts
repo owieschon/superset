@@ -124,6 +124,9 @@ describe("pr-review-brief", () => {
 			"mystery",
 			"pending",
 		]);
+		expect(brief.sources.find((source) => source.name === "reviews")?.url).toBe(
+			target.url,
+		);
 		const markdown = renderMarkdown(brief);
 		expect(markdown).toContain(
 			"commit `old-head` (not confirmed for collected head)",
@@ -466,7 +469,7 @@ describe("pr-review-brief", () => {
 				},
 			],
 			authorBody:
-				"## Validation\nNot run against the live app; do not treat this as tested.\n```\nTests not run in code\n```\n<!-- bot summary -->\nTests passed",
+				"## Validation\nNot run against the live app; do not treat this as tested.\n```\nTests not run in code\n```\n<!-- bot summary -->\nTests passed\n## How I tested it\n- Integration not tested after an unclosed bot summary",
 		});
 		expect(compact).toContain("Incomplete sources");
 		expect(compact).toContain("truncated");
@@ -475,19 +478,32 @@ describe("pr-review-brief", () => {
 		expect(compact).toContain("bot");
 		expect(compact).toContain("human");
 		expect(compact).toContain("Not run against the live app");
+		expect(compact).toContain(
+			"Integration not tested after an unclosed bot summary",
+		);
 		expect(compact).not.toContain("Tests not run in code");
 		expect(compact).not.toContain("<img>");
 	});
 	test("preserves disclosures under the real PR template and skips both fence types", async () => {
 		const brief = await collectBrief(target, apiWith());
 		brief.authorBody =
-			"## How I tested it\n- 8 pre-existing todo tests were not run\n~~~text\nNot tested inside tilde fence\n~~~\n<!-- auto-generated comment -->\nNot tested by bot\n<!-- end of auto-generated comment -->\n- Integration not tested after summary\n````text\n```\nNot run inside longer fence\n````";
+			"## How I tested it\n- 8 pre-existing todo tests were not run\n~~~text\nNot tested inside tilde fence\n~~~\n<!-- auto-generated comment -->\n## How I tested it\n- Not tested by bot\n<!-- end of auto-generated comment -->\n- Integration not tested after summary\n````text\n```\nNot run inside longer fence\n````";
 		const compact = renderCompactMarkdown(brief);
 		expect(compact).toContain("8 pre-existing todo tests were not run");
 		expect(compact).toContain("Integration not tested after summary");
 		expect(compact).not.toContain("inside tilde fence");
 		expect(compact).not.toContain("Not tested by bot");
 		expect(compact).not.toContain("inside longer fence");
+	});
+
+	test("recovers after a fenced end-marker example in an unclosed generated summary", async () => {
+		const brief = await collectBrief(target, apiWith());
+		brief.authorBody =
+			"<!-- bot summary -->\n~~~markdown\n<!-- end of bot summary -->\n~~~\n## How I tested it\n- Integration tests not run after fenced end-marker example";
+		const compact = renderCompactMarkdown(brief);
+		expect(compact).toContain(
+			"Integration tests not run after fenced end-marker example",
+		);
 	});
 
 	test("keeps different runs with the same name and flags missing conclusions", async () => {
