@@ -17,6 +17,22 @@ fi
 # payload alone must never dispatch.
 [ -n "$SUPERSET_TERMINAL_ID" ] || [ -n "$SUPERSET_TAB_ID" ] || exit 0
 
+# A Claude parent can stop its turn while a background subagent still runs.
+# Only the managed CLI shim may inspect the local payload. Old, missing, or
+# unmanaged helpers keep existing behavior; only an exact successful token
+# suppresses this Stop. The parser runs before regex extraction can mistake
+# nested event or agent fields for the parent envelope.
+if [ "$SUPERSET_AGENT_ID" = "claude" ] && [[ "$INPUT" == *'"background_tasks"'* ]]; then
+  CLAUDE_STOP_CLI="${SUPERSET_HOME_DIR:-$HOME/.superset}/bin/superset"
+  if [ -f "$CLAUDE_STOP_CLI" ] && [ -x "$CLAUDE_STOP_CLI" ] && [ ! -L "$CLAUDE_STOP_CLI" ] &&
+    head -n 2 "$CLAUDE_STOP_CLI" | grep -Fxq '# Superset bundled CLI shim v1'; then
+    CLAUDE_STOP_RESULT=$(printf '%s' "$INPUT" | "$CLAUDE_STOP_CLI" agent-hooks claude-stop 2>/dev/null)
+    if [ "$?" = "0" ] && [ "$CLAUDE_STOP_RESULT" = "superset-claude-stop-running-v1" ]; then
+      exit 0
+    fi
+  fi
+fi
+
 # Claude Code and Codex set agent_id only when the hook fires inside a
 # subagent (Task tool / spawn_agent). Subagent activity must not drive
 # terminal-level agent status, notifications, or the session id binding —
