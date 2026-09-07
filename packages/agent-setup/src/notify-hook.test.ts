@@ -15,6 +15,15 @@ function readNotifyHookTemplate(): string {
 // points at an empty home.
 const emptyHome = mkdtempSync(path.join(tmpdir(), "notify-hook-empty-home-"));
 
+// Non-C locales expose range collation in the hook's /bin/bash interpreter.
+const availableLocales = Bun.spawnSync(["locale", "-a"])
+	.stdout.toString()
+	.split(/\s+/);
+const hookLocales = [
+	"C",
+	...availableLocales.filter((locale) => /^en_US\.utf-?8$/i.test(locale)),
+];
+
 function renderNotifyHookScript(): string {
 	return readNotifyHookTemplate()
 		.replaceAll("{{MARKER}}", NOTIFY_SCRIPT_MARKER)
@@ -37,7 +46,7 @@ function runNotifyHook(
 	envOverrides: Record<string, string> = {},
 ) {
 	return Bun.spawnSync({
-		cmd: ["bash", "-c", renderNotifyHookScript()],
+		cmd: ["/bin/bash", "-c", renderNotifyHookScript()],
 		env: hookEnv(envOverrides),
 		stdin: Buffer.from(JSON.stringify(input)),
 		stdout: "pipe",
@@ -55,7 +64,7 @@ async function runNotifyHookAsync(
 	envOverrides: Record<string, string> = {},
 ) {
 	const proc = Bun.spawn({
-		cmd: ["bash", "-c", renderNotifyHookScript()],
+		cmd: ["/bin/bash", "-c", renderNotifyHookScript()],
 		env: hookEnv(envOverrides),
 		stdin: Buffer.from(JSON.stringify(input)),
 		stdout: "pipe",
@@ -172,7 +181,9 @@ describe("getNotifyScriptContent", () => {
 		expect(script).toContain('V1_EVENT_TYPE="Stop"');
 	});
 
-	it("suppresses Cursor events imported into Claude's hook", async () => {
+	it.each(
+		hookLocales,
+	)("suppresses Cursor events imported into Claude's hook (%s)", async (locale) => {
 		const host = fakeHostService(false);
 		const v1 = fakeV1Service();
 		const cursorEvents = [
@@ -193,6 +204,7 @@ describe("getNotifyScriptContent", () => {
 					{
 						SUPERSET_AGENT_ID: "claude",
 						CURSOR_VERSION: "2026.09.02",
+						LC_ALL: locale,
 						SUPERSET_HOST_AGENT_HOOK_URL: `${host.url}/trpc/notifications.hook`,
 					},
 				);
@@ -209,6 +221,7 @@ describe("getNotifyScriptContent", () => {
 				{
 					SUPERSET_AGENT_ID: "claude",
 					CURSOR_VERSION: "2026.09.02",
+					LC_ALL: locale,
 					SUPERSET_TERMINAL_ID: "",
 					SUPERSET_TAB_ID: "tab-test",
 					SUPERSET_HOST_AGENT_HOOK_URL: "",
@@ -223,7 +236,9 @@ describe("getNotifyScriptContent", () => {
 		}
 	});
 
-	it("keeps Claude and other non-Cursor hook events dispatching", async () => {
+	it.each(
+		hookLocales,
+	)("keeps Claude and other non-Cursor hook events dispatching (%s)", async (locale) => {
 		const host = fakeHostService(false);
 		const endpoint = `${host.url}/trpc/notifications.hook`;
 		try {
@@ -238,6 +253,7 @@ describe("getNotifyScriptContent", () => {
 					{
 						SUPERSET_AGENT_ID: "claude",
 						CURSOR_VERSION: "2026.09.02",
+						LC_ALL: locale,
 						SUPERSET_HOST_AGENT_HOOK_URL: endpoint,
 					},
 				);

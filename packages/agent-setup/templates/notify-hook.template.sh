@@ -60,7 +60,7 @@ fi
 # Cursor-specific hook, so do not dispatch them under the imported Claude id.
 if [ "$SUPERSET_AGENT_ID" = "claude" ] && [ -n "$CURSOR_VERSION" ]; then
   case "$EVENT_TYPE" in
-    [a-z]*) exit 0 ;;
+    [[:lower:]]*) exit 0 ;;
   esac
 fi
 
