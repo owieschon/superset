@@ -15,6 +15,8 @@
 	},
 	"dependencies": {
 		"@clack/prompts": "0.10.1",
+		"@superset/chat": "workspace:*",
+		"@superset/chat-runtime": "workspace:*",
 		"@superset/cli-framework": "workspace:*",
 		"@superset/host-service": "workspace:*",
 		"@superset/i18n": "workspace:*",
