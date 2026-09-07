@@ -19,6 +19,7 @@ import {
 } from "@superset/chat-runtime";
 import type { Hono, MiddlewareHandler } from "hono";
 import type { HostDb } from "../db";
+import { resolveClaudeCodeBin } from "./resolveClaudeCodeBin";
 import { createResolveCwd } from "./resolveCwd";
 
 export const CHAT_V3_TRPC_PATH = "/chat-v3/trpc";
@@ -38,7 +39,7 @@ function harnessRegistry(): HarnessRegistry {
 			"claude-code",
 			() =>
 				createClaudeAdapter({
-					pathToClaudeCodeExecutable: process.env.SUPERSET_CHAT_V3_CLAUDE_BIN,
+					pathToClaudeCodeExecutable: resolveClaudeCodeBin(),
 				}),
 		],
 		["codex", () => new CodexAdapter()],
