@@ -46,6 +46,17 @@ interface RecordSubagentHookInput {
 	occurredAt: number;
 }
 
+/**
+ * A parent Stop the store is holding back because children it spawned were
+ * still running. Released as a single completion once the roster drains.
+ */
+export interface DeferredParentStop {
+	terminalId: string;
+	workspaceId: string;
+	/** When the stop was released, i.e. when the parent actually settled. */
+	occurredAt: number;
+}
+
 export interface TerminalAgentBindingListFilter {
 	agentId?: TerminalAgentId;
 	definitionId?: AgentDefinitionId;
@@ -135,6 +146,10 @@ export class TerminalAgentStore extends EventEmitter {
 		string,
 		Map<string, TerminalSubagent>
 	>();
+	private readonly deferredStopByTerminal = new Map<
+		string,
+		DeferredParentStop
+	>();
 	private readonly persistence: TerminalAgentBindingPersistence | undefined;
 
 	constructor(persistence?: TerminalAgentBindingPersistence) {
@@ -162,6 +177,10 @@ export class TerminalAgentStore extends EventEmitter {
 			this.endBinding(terminalId, endReason, occurredAt);
 			return;
 		}
+
+		// The parent spoke again, so whatever Stop we were holding for it is
+		// stale — the turn it would have completed is over.
+		this.deferredStopByTerminal.delete(terminalId);
 
 		const existing = this.byTerminal.get(terminalId);
 		if (!agentId && !existing) return;
@@ -328,6 +347,67 @@ export class TerminalAgentStore extends EventEmitter {
 	}
 
 	/**
+	 * The parent's turn ended, but children it spawned are still running.
+	 * Holds the Stop back — the terminal keeps its working state and nothing
+	 * announces completion — and reports whether it did. `releaseSettledStops`
+	 * hands the held Stop back once the last child clears.
+	 *
+	 * Reads the roster only; it never touches the binding's identity, session
+	 * id, or resume state.
+	 */
+	deferStopWhileSubagentsRun(input: DeferredParentStop): boolean {
+		if (!this.hasLiveSubagents(input.terminalId)) return false;
+		this.deferredStopByTerminal.set(input.terminalId, input);
+		return true;
+	}
+
+	/**
+	 * Stops held for terminals whose rosters have since drained, stamped with
+	 * `now` and applied to their bindings. The caller fans each one out as
+	 * that terminal's single completion. Scoped to `workspaceId` when given.
+	 *
+	 * Draining includes a child that went quiet without a stop:
+	 * `hasLiveSubagents` prunes first, so a lost SubagentStop delays the
+	 * completion by the stale window rather than losing it.
+	 */
+	releaseSettledStops(
+		workspaceId?: string,
+		now: number = Date.now(),
+	): DeferredParentStop[] {
+		const released: DeferredParentStop[] = [];
+		for (const [terminalId, deferred] of [...this.deferredStopByTerminal]) {
+			if (workspaceId !== undefined && deferred.workspaceId !== workspaceId) {
+				continue;
+			}
+			if (this.hasLiveSubagents(terminalId)) continue;
+			this.deferredStopByTerminal.delete(terminalId);
+
+			const binding = this.byTerminal.get(terminalId);
+			if (!binding) continue;
+			const next: TerminalAgentBinding = {
+				...binding,
+				lastEventType: "Stop",
+				lastEventAt: now,
+			};
+			this.byTerminal.set(terminalId, next);
+			this.persistence?.upsert(next);
+			this.emit("change", deferred.workspaceId);
+			released.push({ ...deferred, occurredAt: now });
+		}
+		return released;
+	}
+
+	/** Whether the terminal has a child still running, stale entries pruned. */
+	private hasLiveSubagents(terminalId: string): boolean {
+		const roster = this.pruneSubagents(terminalId);
+		if (!roster) return false;
+		for (const subagent of roster.values()) {
+			if (subagent.endedAt === undefined) return true;
+		}
+		return false;
+	}
+
+	/**
 	 * A child's transcript for the pane: the roster entry plus its parsed
 	 * transcript, or null when the child is unknown. `transcript` is null
 	 * while the child has not flushed its first record.
@@ -392,6 +472,8 @@ export class TerminalAgentStore extends EventEmitter {
 			if (binding.workspaceId !== workspaceId) continue;
 			if (onlyTerminalId !== undefined && terminalId !== onlyTerminalId)
 				continue;
+			// This hatch forces the status itself, so a held Stop is moot.
+			this.deferredStopByTerminal.delete(terminalId);
 			if (binding.lastEventType === "Stop") continue;
 			const next: TerminalAgentBinding = { ...binding, lastEventType: "Stop" };
 			this.byTerminal.set(terminalId, next);
@@ -513,6 +595,8 @@ export class TerminalAgentStore extends EventEmitter {
 		const existing = this.byTerminal.get(terminalId);
 		this.byTerminal.delete(terminalId);
 		this.subagentsByTerminal.delete(terminalId);
+		// The terminal is gone; there is no completion left to announce.
+		this.deferredStopByTerminal.delete(terminalId);
 
 		let marked: { workspaceId: string } | undefined;
 		if (this.persistence?.markEnded) {

@@ -209,6 +209,186 @@ describe("notificationsRouter.hook", () => {
 		expect(broadcastAgentLifecycle).toHaveBeenCalledTimes(1);
 	});
 
+	// #6929: a parent that stops mid-fan-out must not announce completion.
+	// Cases A-E below are the acceptance controls for that behaviour.
+	describe("parent Stop while subagents run", () => {
+		async function startParentWithChild(
+			caller: ReturnType<typeof notificationsRouter.createCaller>,
+		): Promise<void> {
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "Start",
+				agent: { agentId: "claude", sessionId: "root" },
+			});
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "SubagentStart",
+				subagent: { id: "child-1", type: "Explore" },
+			});
+		}
+
+		// A
+		it("holds the completion and keeps the terminal working", async () => {
+			const { ctx, broadcastAgentLifecycle, terminalAgentStore } =
+				createContext("workspace-1");
+			const caller = notificationsRouter.createCaller(ctx);
+			await startParentWithChild(caller);
+			broadcastAgentLifecycle.mockClear();
+
+			const result = await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "Stop",
+				agent: { agentId: "claude", sessionId: "root" },
+			});
+
+			expect(result).toEqual({
+				success: true,
+				ignored: false,
+				deferred: true,
+			});
+			expect(broadcastAgentLifecycle).not.toHaveBeenCalled();
+			expect(terminalAgentStore.get("terminal-1")?.lastEventType).toBe("Start");
+		});
+
+		// B
+		it("emits exactly one completion once the last child clears", async () => {
+			const { ctx, broadcastAgentLifecycle, terminalAgentStore } =
+				createContext("workspace-1");
+			const caller = notificationsRouter.createCaller(ctx);
+			await startParentWithChild(caller);
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "SubagentStart",
+				subagent: { id: "child-2" },
+			});
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "Stop",
+				agent: { agentId: "claude", sessionId: "root" },
+			});
+			broadcastAgentLifecycle.mockClear();
+
+			// First child out: one still running, so still no completion.
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "SubagentStop",
+				subagent: { id: "child-1" },
+			});
+			expect(broadcastAgentLifecycle).not.toHaveBeenCalled();
+			expect(terminalAgentStore.get("terminal-1")?.lastEventType).toBe("Start");
+
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "SubagentStop",
+				subagent: { id: "child-2" },
+			});
+
+			expect(broadcastAgentLifecycle).toHaveBeenCalledTimes(1);
+			expect(broadcastAgentLifecycle.mock.calls[0]?.[0]).toMatchObject({
+				workspaceId: "workspace-1",
+				eventType: "Stop",
+				terminalId: "terminal-1",
+			});
+			expect(terminalAgentStore.get("terminal-1")?.lastEventType).toBe("Stop");
+		});
+
+		// C
+		it("still completes a parent that has no children", async () => {
+			const { ctx, broadcastAgentLifecycle, terminalAgentStore } =
+				createContext("workspace-1");
+			const caller = notificationsRouter.createCaller(ctx);
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "Start",
+				agent: { agentId: "claude", sessionId: "root" },
+			});
+			broadcastAgentLifecycle.mockClear();
+
+			const result = await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "Stop",
+				agent: { agentId: "claude", sessionId: "root" },
+			});
+
+			expect(result).toEqual({ success: true, ignored: false });
+			expect(broadcastAgentLifecycle).toHaveBeenCalledTimes(1);
+			expect(broadcastAgentLifecycle.mock.calls[0]?.[0]?.eventType).toBe(
+				"Stop",
+			);
+			expect(terminalAgentStore.get("terminal-1")?.lastEventType).toBe("Stop");
+		});
+
+		// D
+		it("still raises a permission request while children run", async () => {
+			const { ctx, broadcastAgentLifecycle, terminalAgentStore } =
+				createContext("workspace-1");
+			const caller = notificationsRouter.createCaller(ctx);
+			await startParentWithChild(caller);
+			broadcastAgentLifecycle.mockClear();
+
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "PreToolUse",
+				agent: { agentId: "claude", sessionId: "root" },
+			});
+
+			expect(broadcastAgentLifecycle).toHaveBeenCalledTimes(1);
+			expect(broadcastAgentLifecycle.mock.calls[0]?.[0]?.eventType).toBe(
+				"PermissionRequest",
+			);
+			expect(terminalAgentStore.get("terminal-1")?.lastEventType).toBe(
+				"PermissionRequest",
+			);
+		});
+
+		// E (#7231)
+		it("never completes the parent from child events alone", async () => {
+			const { ctx, broadcastAgentLifecycle, terminalAgentStore } =
+				createContext("workspace-1");
+			const caller = notificationsRouter.createCaller(ctx);
+			await startParentWithChild(caller);
+			broadcastAgentLifecycle.mockClear();
+
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "SubagentStop",
+				subagent: { id: "child-1" },
+			});
+
+			expect(broadcastAgentLifecycle).not.toHaveBeenCalled();
+			expect(terminalAgentStore.get("terminal-1")?.lastEventType).toBe("Start");
+		});
+
+		it("drops the held completion when the parent starts a new turn", async () => {
+			const { ctx, broadcastAgentLifecycle, terminalAgentStore } =
+				createContext("workspace-1");
+			const caller = notificationsRouter.createCaller(ctx);
+			await startParentWithChild(caller);
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "Stop",
+				agent: { agentId: "claude", sessionId: "root" },
+			});
+
+			// The user replied before the child finished.
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "UserPromptSubmit",
+				agent: { agentId: "claude", sessionId: "root" },
+			});
+			broadcastAgentLifecycle.mockClear();
+
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "SubagentStop",
+				subagent: { id: "child-1" },
+			});
+
+			expect(broadcastAgentLifecycle).not.toHaveBeenCalled();
+			expect(terminalAgentStore.get("terminal-1")?.lastEventType).toBe("Start");
+		});
+	});
+
 	it("resolves transcript paths with the parent binding's harness", async () => {
 		const { ctx, terminalAgentStore } = createContext("workspace-1");
 		const caller = notificationsRouter.createCaller(ctx);

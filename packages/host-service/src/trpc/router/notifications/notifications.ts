@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { terminalSessions, workspaces } from "../../../db/schema";
 import { mapEventType } from "../../../events";
+import { releaseDeferredStops } from "../../../terminal-agents";
 import type { HostServiceContext } from "../../../types";
 import { touchLocalWorkspaceActivity } from "../../../workspaces/local-workspace-store";
 import { publicProcedure, router } from "../../index";
@@ -149,6 +150,9 @@ export const notificationsRouter = router({
 				workspaceId: terminalSession.originWorkspaceId,
 				occurredAt,
 			});
+			// That child may have been the last one a stopped parent was
+			// waiting on — this is where the deferred completion lands.
+			releaseDeferredStops(ctx, terminalSession.originWorkspaceId);
 			return { success: true, ignored: false as const };
 		}
 		if (!eventType) {
@@ -156,6 +160,24 @@ export const notificationsRouter = router({
 		}
 
 		const agent = normalizeAgentIdentity(input.agent);
+
+		// A parent can end its turn while children it spawned still run.
+		// Announcing completion there is the lie: hold the Stop back, leave
+		// the terminal working, and let the last child release it above.
+		if (
+			eventType === "Stop" &&
+			ctx.terminalAgentStore.deferStopWhileSubagentsRun({
+				terminalId: input.terminalId,
+				workspaceId: terminalSession.originWorkspaceId,
+				occurredAt,
+			})
+		) {
+			return {
+				success: true,
+				ignored: false as const,
+				deferred: true as const,
+			};
+		}
 
 		ctx.eventBus.broadcastAgentLifecycle({
 			workspaceId: terminalSession.originWorkspaceId,
