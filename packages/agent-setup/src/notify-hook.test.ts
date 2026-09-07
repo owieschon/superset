@@ -1,5 +1,12 @@
-import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, it } from "bun:test";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { getTemplatePath } from "./config";
@@ -104,7 +111,7 @@ function writeHookManifest(home: string, orgId: string, endpoint: string) {
 
 describe("getNotifyScriptContent", () => {
 	it("bumps the notify hook marker when hook semantics change", () => {
-		expect(NOTIFY_SCRIPT_MARKER).toBe("# Superset agent notification hook v14");
+		expect(NOTIFY_SCRIPT_MARKER).toBe("# Superset agent notification hook v15");
 	});
 
 	it("forwards hooks fired inside a subagent (agent_id present) to the host roster only", async () => {
@@ -368,6 +375,204 @@ describe("getNotifyScriptContent", () => {
 		expect(result.exitCode).toBe(0);
 		expect(result.stderr.toString()).toBe("");
 	});
+});
+
+describe("Claude parent background completion", () => {
+	const homes: string[] = [];
+	const pending = {
+		hook_event_name: "Stop",
+		session_id: "parent-session",
+		background_tasks: [{ type: "subagent", status: "running" }],
+		last_assistant_message: 'private "quoted" message\nsecond line\\tail',
+	};
+	const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
+
+	function helperHome(kind: "current" | "missing" | "old" | "unmanaged") {
+		const home = mkdtempSync(path.join(tmpdir(), "claude-stop-hook-"));
+		homes.push(home);
+		mkdirSync(path.join(home, "bin"));
+		if (kind === "missing") return home;
+		let body = "printf 'unknown command\\n' >&2\nexit 1\n";
+		if (kind === "current") {
+			const entry = path.join(home, "entry.ts");
+			writeFileSync(
+				entry,
+				`import { run } from ${JSON.stringify(path.resolve(import.meta.dir, "../../cli-framework/src/runner.ts"))};
+import command from ${JSON.stringify(path.resolve(import.meta.dir, "../../cli/src/commands/agent-hooks/claude-stop/command.ts"))};
+await run({ name: "superset", version: "test", tree: {
+  commands: [{ path: ["agent-hooks", "claude-stop"], command }], groups: [],
+  middleware: async () => { throw new Error("Authentication and telemetry middleware must not run"); }
+} });`,
+			);
+			body = `exec ${quote(process.execPath)} ${quote(entry)} "$@"\n`;
+		} else if (kind === "unmanaged") {
+			body = "printf superset-claude-stop-running-v1\n";
+		}
+		writeFileSync(
+			path.join(home, "bin", "superset"),
+			`#!/bin/sh\n${kind === "unmanaged" ? "# Unmanaged executable" : "# Superset bundled CLI shim v1"}\n${body}`,
+			{ mode: 0o755 },
+		);
+		return home;
+	}
+
+	function claudeEnv(home: string): Record<string, string> {
+		return {
+			SUPERSET_AGENT_ID: "claude",
+			SUPERSET_HOME_DIR: home,
+			SUPERSET_HOOK_DEBUG_LOG: path.join(home, "debug.log"),
+		};
+	}
+
+	afterAll(() => {
+		for (const home of homes) rmSync(home, { recursive: true, force: true });
+	});
+
+	it("bypasses both v2 and v1 for a running parent, then forwards its final Stop", async () => {
+		const host = fakeHostService(false);
+		const v1Requests: URL[] = [];
+		const v1 = Bun.serve({
+			port: 0,
+			fetch(req) {
+				v1Requests.push(new URL(req.url));
+				return new Response("ok");
+			},
+		});
+		const home = helperHome("current");
+		const env = {
+			...claudeEnv(home),
+			SUPERSET_PORT: String(v1.port),
+			SUPERSET_HOST_AGENT_HOOK_URL: `${host.url}/trpc/notifications.hook`,
+		};
+		try {
+			const held = await runNotifyHookAsync(pending, env);
+			expect(held.exitCode).toBe(0);
+			expect(host.requests).toHaveLength(0);
+			expect(v1Requests).toHaveLength(0);
+			expect(held.stderr).toBe("");
+			expect(existsSync(path.join(home, "debug.log"))).toBe(false);
+
+			await runNotifyHookAsync({ ...pending, background_tasks: [] }, env);
+			expect(host.requests).toHaveLength(1);
+			expect(host.requests[0]?.json).toEqual({
+				terminalId: "terminal-test",
+				eventType: "Stop",
+				agent: { agentId: "claude", sessionId: "parent-session" },
+			});
+			expect(v1Requests).toHaveLength(0);
+
+			const v1Env = {
+				...env,
+				SUPERSET_TERMINAL_ID: "",
+				SUPERSET_TAB_ID: "tab",
+			};
+			await runNotifyHookAsync(pending, v1Env);
+			expect(v1Requests).toHaveLength(0);
+			await runNotifyHookAsync({ ...pending, background_tasks: [] }, v1Env);
+			expect(v1Requests).toHaveLength(1);
+			expect(v1Requests[0]?.searchParams.get("eventType")).toBe("Stop");
+			expect(v1Requests[0]?.search).not.toContain("private");
+		} finally {
+			host.stop();
+			v1.stop(true);
+		}
+	}, 20_000);
+
+	it("classifies a parent Stop before nested agent_id can route it as a child", async () => {
+		const host = fakeHostService(false);
+		try {
+			const result = await runNotifyHookAsync(
+				{
+					nested: {
+						agent_id: "nested-child",
+						hook_event_name: "PermissionRequest",
+					},
+					...pending,
+				},
+				{
+					...claudeEnv(helperHome("current")),
+					SUPERSET_HOST_AGENT_HOOK_URL: `${host.url}/trpc/notifications.hook`,
+				},
+			);
+			expect(result.exitCode).toBe(0);
+			expect(host.requests).toHaveLength(0);
+			expect(result.stderr).not.toContain("subagent event=");
+		} finally {
+			host.stop();
+		}
+	});
+
+	it("preserves the child roster, start, permission, failure, and session-end events", async () => {
+		const host = fakeHostService(false);
+		const env = {
+			...claudeEnv(helperHome("current")),
+			SUPERSET_HOST_AGENT_HOOK_URL: `${host.url}/trpc/notifications.hook`,
+		};
+		try {
+			await runNotifyHookAsync({ ...pending, agent_id: "child" }, env);
+			expect(host.requests[0]?.json.subagent).toMatchObject({ id: "child" });
+			expect(host.requests[0]?.json.agent).toBeUndefined();
+			for (const event of [
+				"UserPromptSubmit",
+				"PostToolUse",
+				"PermissionRequest",
+				"StopFailure",
+				"SessionEnd",
+			]) {
+				await runNotifyHookAsync({ ...pending, hook_event_name: event }, env);
+			}
+			expect(host.requests.map((req) => req.json.eventType)).toEqual([
+				"Stop",
+				"Start",
+				"PostToolUse",
+				"PermissionRequest",
+				"StopFailure",
+				"SessionEnd",
+			]);
+		} finally {
+			host.stop();
+		}
+	}, 20_000);
+
+	it("does not gate another provider or dispatch outside Superset", async () => {
+		const host = fakeHostService(false);
+		const env = {
+			...claudeEnv(helperHome("current")),
+			SUPERSET_HOST_AGENT_HOOK_URL: `${host.url}/trpc/notifications.hook`,
+		};
+		try {
+			await runNotifyHookAsync(pending, { ...env, SUPERSET_AGENT_ID: "codex" });
+			expect(host.requests).toHaveLength(1);
+			const result = await runNotifyHookAsync(pending, {
+				...env,
+				SUPERSET_TERMINAL_ID: "",
+				SUPERSET_TAB_ID: "",
+			});
+			expect(result.stderr).toBe("");
+			expect(host.requests).toHaveLength(1);
+		} finally {
+			host.stop();
+		}
+	});
+
+	for (const kind of ["missing", "old", "unmanaged"] as const) {
+		it(`retains existing Stop behavior with a ${kind} helper`, async () => {
+			const host = fakeHostService(false);
+			const home = helperHome(kind);
+			try {
+				const result = await runNotifyHookAsync(pending, {
+					...claudeEnv(home),
+					SUPERSET_HOST_AGENT_HOOK_URL: `${host.url}/trpc/notifications.hook`,
+				});
+				expect(result.exitCode).toBe(0);
+				expect(host.requests).toHaveLength(1);
+				expect(host.requests[0]?.json.eventType).toBe("Stop");
+				expect(JSON.stringify(host.requests)).not.toContain("private");
+			} finally {
+				host.stop();
+			}
+		});
+	}
 });
 
 describe("per-agent hook scripts dispatch to v2", () => {
