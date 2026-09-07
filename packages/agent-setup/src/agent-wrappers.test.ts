@@ -26,7 +26,7 @@ let mockedHomeDir = path.join(TEST_ROOT, "home");
 
 mock.module("./notify-hook", () => ({
 	NOTIFY_SCRIPT_NAME: "notify.sh",
-	NOTIFY_SCRIPT_MARKER: "# Superset agent notification hook v9",
+	NOTIFY_SCRIPT_MARKER: "# Superset agent notification hook v10",
 	getNotifyScriptPath: () => path.join(TEST_HOOKS_DIR, "notify.sh"),
 	getNotifyScriptContent: () => "#!/bin/bash\nexit 0\n",
 	createNotifyScript: () => {},
@@ -792,7 +792,7 @@ exit 0
 		const content2 = requireContent(getCursorHooksJsonContent(currentHookPath));
 
 		const parsed = JSON.parse(content) as {
-			hooks: Record<string, Array<{ command: string }>>;
+			hooks: Record<string, Array<{ command: string; matcher?: string }>>;
 		};
 		const beforeSubmitPrompt = parsed.hooks.beforeSubmitPrompt;
 
@@ -822,8 +822,183 @@ exit 0
 		).toBe(true);
 		expect(Array.isArray(parsed.hooks.beforeShellExecution)).toBe(true);
 		expect(Array.isArray(parsed.hooks.beforeMCPExecution)).toBe(true);
+		for (const event of ["postToolUse", "postToolUseFailure"]) {
+			expect(parsed.hooks[event]).toEqual([
+				{ command: `${currentHookPath} Start`, matcher: "^(Shell|MCP:.+)$" },
+			]);
+		}
+		for (const event of ["postToolUse", "postToolUseFailure"]) {
+			const matcher = new RegExp(
+				requireContent(parsed.hooks[event][0].matcher ?? null),
+			);
+			for (const tool of ["Shell", "MCP:audit_echo", "MCP:audit_failure"])
+				expect(matcher.test(tool)).toBe(true);
+			for (const tool of [
+				"Read",
+				"Edit",
+				"Grep",
+				"Task",
+				"AskQuestion",
+				"ShellOther",
+				"OtherMCP:test",
+			])
+				expect(matcher.test(tool)).toBe(false);
+		}
 		expect(JSON.parse(content2)).toEqual(JSON.parse(content));
 	});
+
+	it.each([
+		"beforeShellExecution",
+		"beforeMCPExecution",
+	])("keeps Cursor identity through %s and native tool outcomes", async (beforeEvent) => {
+		const cursorPath = path.join(TEST_HOOKS_DIR, "cursor-hook.sh");
+		const notifyPath = path.join(TEST_HOOKS_DIR, "notify.sh");
+		mkdirSync(TEST_HOOKS_DIR, { recursive: true });
+		for (const [name, target] of [
+			["cursor-hook", cursorPath],
+			["notify-hook", notifyPath],
+		]) {
+			const template = readFileSync(
+				new URL(`../templates/${name}.template.sh`, import.meta.url),
+				"utf-8",
+			);
+			writeFileSync(
+				target,
+				template
+					.replaceAll("{{MARKER}}", "# test hook")
+					.replaceAll("{{DEFAULT_PORT}}", "0"),
+				{ mode: 0o755 },
+			);
+		}
+		const { hooks } = JSON.parse(
+			requireContent(getCursorHooksJsonContent(cursorPath)),
+		) as {
+			hooks: Record<string, Array<{ command: string; matcher?: string }>>;
+		};
+		const reports: Array<{
+			terminalId: string;
+			eventType: string;
+			agent: { agentId: string; sessionId: string };
+		}> = [];
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			async fetch(request) {
+				const body = (await request.json()) as {
+					json: (typeof reports)[number];
+				};
+				reports.push(body.json);
+				return Response.json({
+					result: { data: { json: { ignored: false } } },
+				});
+			},
+		});
+		const identity = { agentId: "cursor-agent", sessionId: "cursor-session" };
+		// Async children keep the in-process receiver responsive to curl.
+		const invoke = async (
+			command: string,
+			event: string,
+			imported = false,
+			extra = {},
+		) => {
+			const proc = Bun.spawn(["bash", "-c", command], {
+				env: {
+					PATH: process.env.PATH,
+					CURL_HOME: TEST_ROOT,
+					SUPERSET_HOME_DIR: TEST_ROOT,
+					SUPERSET_TERMINAL_ID: "cursor-terminal",
+					SUPERSET_HOST_AGENT_HOOK_URL: `http://127.0.0.1:${server.port}/trpc/notifications.hook`,
+					SUPERSET_AGENT_ID: imported ? "claude" : identity.agentId,
+					CURSOR_VERSION: "2026.09.02-c22c1a3",
+				},
+				stdin: new Blob([
+					JSON.stringify({
+						session_id: identity.sessionId,
+						hook_event_name: event,
+						...extra,
+					}),
+				]),
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const [code, stdout, stderr] = await Promise.all([
+				proc.exited,
+				new Response(proc.stdout).text(),
+				new Response(proc.stderr).text(),
+			]);
+			expect(code).toBe(0);
+			expect(stderr).toBe("");
+			return stdout;
+		};
+		const native = async (
+			event: string,
+			extra: Record<string, unknown> = {},
+		) => {
+			for (const hook of hooks[event] ?? []) {
+				if (
+					hook.matcher &&
+					!new RegExp(hook.matcher).test(String(extra.tool_name ?? ""))
+				)
+					continue;
+				await invoke(hook.command, event, false, extra);
+			}
+		};
+		try {
+			for (const [outcome, extra] of [
+				["postToolUse", {}],
+				["postToolUseFailure", { is_interrupt: false }],
+				["postToolUseFailure", { is_interrupt: true }],
+			] as const) {
+				reports.length = 0;
+				await native("beforeSubmitPrompt");
+				await invoke(notifyPath, "beforeSubmitPrompt", true);
+				await native(beforeEvent);
+				expect(reports.at(-1)).toMatchObject({
+					eventType: "PermissionRequest",
+					agent: identity,
+				});
+				// A child file tool must not overwrite a parent waiting on shell/MCP.
+				await native(outcome, {
+					...extra,
+					tool_name: "Read",
+					session_id: "child-session",
+				});
+				expect(reports.at(-1)).toMatchObject({
+					eventType: "PermissionRequest",
+					agent: identity,
+				});
+				await native(outcome, {
+					...extra,
+					tool_name:
+						beforeEvent === "beforeShellExecution" ? "Shell" : "MCP:audit_echo",
+				});
+				// Cursor imports Claude PostToolUse, but not PostToolUseFailure.
+				if (outcome === "postToolUse")
+					await invoke(notifyPath, "postToolUse", true);
+				expect(reports.at(-1)).toMatchObject({
+					eventType: "Start",
+					agent: identity,
+				});
+				await native("stop", { status: "completed" });
+				await invoke(notifyPath, "stop", true);
+				expect(reports.map(({ eventType }) => eventType)).toEqual([
+					"Start",
+					"PermissionRequest",
+					"Start",
+					"Stop",
+				]);
+				expect(
+					reports.every(
+						({ agent }) =>
+							agent.agentId === identity.agentId &&
+							agent.sessionId === identity.sessionId,
+					),
+				).toBe(true);
+			}
+		} finally {
+			server.stop(true);
+		}
+	}, 60_000);
 
 	it("replaces stale Gemini hook commands from old superset paths", () => {
 		const geminiSettingsPath = path.join(
