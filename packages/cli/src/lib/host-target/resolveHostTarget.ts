@@ -1,3 +1,4 @@
+import type { ChatRouter } from "@superset/chat-runtime";
 import { CLIError } from "@superset/cli-framework";
 import type { AppRouter as HostServiceRouter } from "@superset/host-service/trpc";
 import { getHostId } from "@superset/shared/host-info";
@@ -12,6 +13,13 @@ export type HostServiceClient = ReturnType<
 	typeof createTRPCClient<HostServiceRouter>
 >;
 
+/**
+ * chat-v3 is mounted as its own tRPC server at `/chat-v3/trpc`
+ * (see host-service/src/chat-v3/mount.ts), separate from the main
+ * `HostServiceRouter` at `/trpc` — so it needs its own typed client.
+ */
+export type ChatServiceClient = ReturnType<typeof createTRPCClient<ChatRouter>>;
+
 /** Base WebSocket origin + auth token for the host's WS routes (terminals, CDP). */
 export interface HostWsEndpoint {
 	/** e.g. `ws://127.0.0.1:5123` (local) or `wss://relay/hosts/<key>` (remote). */
@@ -25,12 +33,14 @@ export type ResolvedHostTarget =
 			kind: "local";
 			hostId: string;
 			client: HostServiceClient;
+			chat: ChatServiceClient;
 			ws: HostWsEndpoint;
 	  }
 	| {
 			kind: "remote";
 			hostId: string;
 			client: HostServiceClient;
+			chat: ChatServiceClient;
 			ws: HostWsEndpoint;
 	  };
 
@@ -82,6 +92,21 @@ export async function resolveHostTarget(
 					}),
 				],
 			}),
+			// No `transformer` here: unlike HostServiceRouter, ChatRouter's
+			// `initTRPC.create()` (chat-runtime/src/router/router/router.ts)
+			// doesn't declare superjson, so the client must not either — every
+			// chat-v3 schema is already plain JSON (no Date/Map/etc).
+			chat: createTRPCClient<ChatRouter>({
+				links: [
+					httpBatchLink({
+						url: `${manifest.endpoint}/chat-v3/trpc`,
+						headers: {
+							Authorization: `Bearer ${manifest.authToken}`,
+							"x-superset-client-machine-id": localHostId,
+						},
+					}),
+				],
+			}),
 			ws: {
 				baseWsUrl: manifest.endpoint.replace(/^http/, "ws"),
 				token: manifest.authToken,
@@ -99,6 +124,18 @@ export async function resolveHostTarget(
 				httpBatchLink({
 					url: `${relayUrl}/hosts/${routingKey}/trpc`,
 					transformer: SuperJSON,
+					headers: {
+						Authorization: `Bearer ${options.userJwt}`,
+						"x-superset-client-machine-id": localHostId,
+					},
+				}),
+			],
+		}),
+		// See the local branch above: ChatRouter has no transformer declared.
+		chat: createTRPCClient<ChatRouter>({
+			links: [
+				httpBatchLink({
+					url: `${relayUrl}/hosts/${routingKey}/chat-v3/trpc`,
 					headers: {
 						Authorization: `Bearer ${options.userJwt}`,
 						"x-superset-client-machine-id": localHostId,
