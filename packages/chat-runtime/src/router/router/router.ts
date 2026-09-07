@@ -22,11 +22,23 @@ export type ChatRouterOptions = {
 
 const UNKNOWN_HARNESS = /^unknown harness /;
 const NOT_RUNNING = /^chat session (.+) is not running$/;
+const UNKNOWN_APPROVAL = /^unknown approval /;
 
 function mapCommandError(runtime: ChatRuntime, error: unknown): unknown {
 	if (error instanceof TRPCError) return error;
 	if (!(error instanceof Error)) return error;
 	if (UNKNOWN_HARNESS.test(error.message)) {
+		return new TRPCError({
+			code: "BAD_REQUEST",
+			message: error.message,
+			cause: error,
+		});
+	}
+	// A stale or mismatched approval id (already answered, or never issued):
+	// the fake harness raises this synchronously; real harnesses may instead
+	// no-op (see claudeAdapter/codexAdapter respondToApproval), which is
+	// pre-existing behavior this router doesn't change.
+	if (UNKNOWN_APPROVAL.test(error.message)) {
 		return new TRPCError({
 			code: "BAD_REQUEST",
 			message: error.message,
