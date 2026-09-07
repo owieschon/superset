@@ -18,6 +18,7 @@ import type {
 	TerminalAgentId,
 	TerminalAgentStore,
 } from "../../../terminal-agents";
+import { releaseDeferredStops } from "../../../terminal-agents";
 import {
 	claimResumeCandidateBinding,
 	findResumeCandidateBinding,
@@ -341,6 +342,10 @@ export const terminalAgentsRouter = router({
 		)
 		.query(({ ctx, input }) => {
 			const { workspaceId, agentId, definitionId } = input;
+			// Backstop for a held completion (notifications.hook) whose last
+			// child died without a stop hook: the roster's stale prune runs on
+			// this read, so the deferred Stop lands here instead of never.
+			releaseDeferredStops(ctx, workspaceId);
 			return ctx.terminalAgentStore.listByWorkspace(workspaceId, {
 				...(agentId ? { agentId } : {}),
 				...(definitionId ? { definitionId } : {}),

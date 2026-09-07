@@ -26,6 +26,7 @@ import {
 	type ResumeSessionDeps,
 	restartAccountSessions,
 	resumeTerminalAgentSession,
+	terminalAgentsRouter,
 } from "./terminal-agents";
 
 const MIGRATIONS_FOLDER = resolve(import.meta.dir, "../../../../drizzle");
@@ -621,5 +622,73 @@ describe("restartAccountSessions", () => {
 		expect(disposedTerminals).toEqual(["t1"]);
 		expect(broadcasts).toEqual([]);
 		expect(findResumeCandidateBinding(db, "ws-1", "t1")).toBeDefined();
+	});
+});
+
+describe("terminalAgents.listByWorkspace", () => {
+	// A held completion (notifications.hook) whose last child died without a
+	// stop hook only drains on a roster read; the sidebar's poll lands here.
+	it("fans out a held completion whose roster has since gone stale", async () => {
+		const store = new TerminalAgentStore();
+		const stale = Date.now() - 11 * 60_000;
+		store.recordEvent({
+			terminalId: "t1",
+			workspaceId: "ws-1",
+			eventType: "Start",
+			agentId: "claude",
+			agentSessionId: "s1",
+			occurredAt: stale,
+		});
+		store.recordSubagentEvent({
+			terminalId: "t1",
+			workspaceId: "ws-1",
+			eventType: "SubagentStart",
+			subagentId: "a1",
+			occurredAt: Date.now(),
+		});
+		expect(
+			store.deferStopWhileSubagentsRun({
+				terminalId: "t1",
+				workspaceId: "ws-1",
+				occurredAt: Date.now(),
+			}),
+		).toBe(true);
+		// The child then goes quiet past the stale window.
+		store.recordSubagentEvent({
+			terminalId: "t1",
+			workspaceId: "ws-1",
+			eventType: "SubagentStart",
+			subagentId: "a1",
+			occurredAt: stale,
+		});
+
+		const broadcasts: Array<{
+			workspaceId: string;
+			eventType: string;
+			terminalId: string;
+		}> = [];
+		const caller = terminalAgentsRouter.createCaller({
+			isAuthenticated: true,
+			terminalAgentStore: store,
+			eventBus: {
+				broadcastAgentLifecycle: ({
+					workspaceId,
+					eventType,
+					terminalId,
+				}: {
+					workspaceId: string;
+					eventType: string;
+					terminalId: string;
+				}) => broadcasts.push({ workspaceId, eventType, terminalId }),
+			},
+		} as unknown as Parameters<typeof terminalAgentsRouter.createCaller>[0]);
+
+		const bindings = await caller.listByWorkspace({ workspaceId: "ws-1" });
+
+		expect(broadcasts).toEqual([
+			{ workspaceId: "ws-1", eventType: "Stop", terminalId: "t1" },
+		]);
+		expect(bindings[0]?.lastEventType).toBe("Stop");
+		expect(bindings[0]?.subagents).toBeUndefined();
 	});
 });

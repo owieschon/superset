@@ -1,5 +1,7 @@
 export { SqliteTerminalAgentBindingPersistence } from "./persistence";
+export { releaseDeferredStops } from "./release-deferred-stops";
 export type {
+	DeferredParentStop,
 	TerminalAgentBindingListFilter,
 	TerminalAgentBindingPersistence,
 } from "./store";
