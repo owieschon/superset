@@ -37,7 +37,7 @@ function buildDecision(
 
 export default command({
 	description:
-		"Answer a pending chat-v3 approval by id — rejects a stale or mismatched id instead of silently applying it",
+		"Answer a pending chat-v3 approval by id — a stale or mismatched id is rejected on harnesses that report it as an error; the claude-code and codex harnesses currently no-op silently on one instead (see router.ts mapCommandError)",
 	options: {
 		host: string().desc("Target host machineId"),
 		local: boolean().desc("Target this machine"),
