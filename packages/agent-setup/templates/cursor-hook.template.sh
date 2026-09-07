@@ -34,12 +34,12 @@ json_escape() {
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
-# This script only fires for Cursor sessions, so an unset SUPERSET_AGENT_ID
-# means Cursor ran outside a Superset wrapper: the cursor-agent CLI stamps
-# CURSOR_AGENT/CURSOR_CLI into its env; anything else is the IDE Composer.
+# Superset wrappers supply explicit identity. Direct Cursor CLI launchers set
+# CURSOR_INVOKED_AS; retain legacy CLI markers and the IDE Composer fallback.
 AGENT_ID="$SUPERSET_AGENT_ID"
 if [ -z "$AGENT_ID" ]; then
-  if [ -n "$CURSOR_AGENT" ] || [ -n "$CURSOR_CLI" ]; then
+  if [ -n "$CURSOR_AGENT" ] || [ -n "$CURSOR_CLI" ] \
+    || [ "$CURSOR_INVOKED_AS" = "cursor-agent" ] || [ "$CURSOR_INVOKED_AS" = "agent" ]; then
     AGENT_ID="cursor-agent"
   else
     AGENT_ID="cursor-composer"
