@@ -1,5 +1,9 @@
-import { db, dbWs } from "@superset/db/client";
+import { db } from "@superset/db/client";
 import { cloudWorkspaces } from "@superset/db/schema";
+import {
+	type CloudAgentLaunch,
+	cloudAgentLaunchToEnv,
+} from "@superset/shared/cloud-agent-launch";
 import {
 	SANDBOX_HOST_DB_PATH,
 	SANDBOX_WORKSPACE_PATH,
@@ -26,6 +30,8 @@ export interface ProvisionCloudWorkspaceInput {
 	 * `FALLBACK_NAME` and this is what the workspace gets named from.
 	 */
 	namingPrompt?: string;
+	/** A built-in agent to run once the sandbox is up; see cloud-agent-launch. */
+	launch?: CloudAgentLaunch;
 }
 
 export type ProvisionCloudWorkspaceOutcome =
@@ -87,7 +93,7 @@ export async function provisionCloudWorkspace(
 		const nameWrite =
 			resolvedName === row.name
 				? Promise.resolve()
-				: dbWs
+				: db
 						.update(cloudWorkspaces)
 						.set({ name: resolvedName })
 						.where(eq(cloudWorkspaces.id, row.id));
@@ -124,12 +130,13 @@ export async function provisionCloudWorkspace(
 						: {}),
 					SUPERSET_SANDBOX_IMAGE_TAG: environment.sourceRef,
 					SUPERSET_SANDBOX_PROVIDER: row.provider,
+					...cloudAgentLaunchToEnv(input.launch),
 				},
 			}),
 			nameWrite,
 		]);
 
-		await dbWs
+		await db
 			.update(cloudWorkspaces)
 			.set({
 				providerSandboxId: sandbox.providerSandboxId,
@@ -151,7 +158,7 @@ export async function provisionCloudWorkspace(
 				teardownError,
 			);
 		});
-		await dbWs
+		await db
 			.update(cloudWorkspaces)
 			.set({ status: "failed" })
 			.where(eq(cloudWorkspaces.id, row.id));

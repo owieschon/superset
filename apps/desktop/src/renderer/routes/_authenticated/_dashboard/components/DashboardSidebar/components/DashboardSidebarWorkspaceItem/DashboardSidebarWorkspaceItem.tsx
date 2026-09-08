@@ -73,12 +73,10 @@ export function DashboardSidebarWorkspaceItem({
 			}),
 			{
 				loading: t({
-					id: "dashboard.sidebar.promotingToEnvironment",
 					message: "Saving as an environment...",
 				}),
 				success: (created) =>
 					t({
-						id: "dashboard.sidebar.promotedToEnvironment",
 						message: `Saved "${created?.name}" as an environment`,
 					}),
 				error: (error) => errorMessage(error),
@@ -107,6 +105,7 @@ export function DashboardSidebarWorkspaceItem({
 		handleClick,
 		handleCopyPath,
 		handleCopyBranchName,
+		handleCopyWorkspaceId,
 		handleCreateSection,
 		handleMoveToSection,
 		handleOpenInFinder,
@@ -128,6 +127,8 @@ export function DashboardSidebarWorkspaceItem({
 		isSessionWorkspace,
 		workspaceName: name,
 		branch,
+		pullRequestUrl: pullRequest?.url ?? null,
+		isCloudWorkspace: hostType === "cloud",
 		isMainWorkspace,
 		isPinned: workspace.isPinned,
 	});
@@ -265,11 +266,9 @@ export function DashboardSidebarWorkspaceItem({
 						isPending
 							? workspace.type === "session"
 								? t({
-										id: "dashboard.sidebar.workspaceItem.creatingSession",
 										message: `Creating session: ${name}`,
 									})
 								: t({
-										id: "dashboard.sidebar.workspaceItem.creatingWorkspace",
 										message: `Creating workspace: ${name}`,
 									})
 							: undefined
@@ -307,6 +306,7 @@ export function DashboardSidebarWorkspaceItem({
 							onOpenInFinder={handleOpenInFinder}
 							onCopyPath={handleCopyPath}
 							onCopyBranchName={handleCopyBranchName}
+							onCopyWorkspaceId={handleCopyWorkspaceId}
 							onRemoveFromSidebar={handleRemoveFromSidebar}
 							onRemovePullRequest={handleRemovePullRequest}
 							onRename={isMainWorkspace ? undefined : startRename}
@@ -399,6 +399,7 @@ export function DashboardSidebarWorkspaceItem({
 						showDeleteHotkey={isActive}
 						onCopyPath={handleCopyPath}
 						onCopyBranchName={handleCopyBranchName}
+						onCopyWorkspaceId={handleCopyWorkspaceId}
 						onRemoveFromSidebar={handleRemoveFromSidebar}
 						onRemovePullRequest={handleRemovePullRequest}
 						onRename={isMainWorkspace ? undefined : startRename}

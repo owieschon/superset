@@ -45,7 +45,6 @@ export function useSubmitWorkspace(
 		if (!projectId && !isSession) {
 			toast.error(
 				t({
-					id: "dashboard.newWorkspaceModal.submit.selectProjectFirst",
 					message: "Select a project first",
 				}),
 			);
@@ -54,7 +53,6 @@ export function useSubmitWorkspace(
 		if (isSession && draft.linkedPR !== null) {
 			toast.error(
 				t({
-					id: "dashboard.newWorkspaceModal.submit.prRequiresProject",
 					message: "Checking out a PR requires a project",
 				}),
 			);
@@ -63,7 +61,6 @@ export function useSubmitWorkspace(
 		if (!activeOrganizationId) {
 			toast.error(
 				t({
-					id: "dashboard.newWorkspaceModal.submit.noActiveOrganization",
 					message: "No active organization",
 				}),
 			);
@@ -74,7 +71,6 @@ export function useSubmitWorkspace(
 		if (!hostId) {
 			toast.error(
 				t({
-					id: "dashboard.newWorkspaceModal.submit.noActiveHost",
 					message: "No active host",
 				}),
 			);
@@ -88,11 +84,9 @@ export function useSubmitWorkspace(
 			toast.error(
 				first.filename
 					? t({
-							id: "dashboard.newWorkspaceModal.submit.attachmentUploadFailedNamed",
 							message: `Attachment upload failed (${first.filename}): ${first.message}`,
 						})
 					: t({
-							id: "dashboard.newWorkspaceModal.submit.attachmentUploadFailed",
 							message: `Attachment upload failed: ${first.message}`,
 						}),
 			);
@@ -113,7 +107,6 @@ export function useSubmitWorkspace(
 			if (!environment) {
 				toast.error(
 					t({
-						id: "dashboard.newWorkspaceModal.submit.cloudRequiresEnvironment",
 						message:
 							"Add an environment in Settings before creating a cloud workspace",
 					}),
@@ -125,12 +118,39 @@ export function useSubmitWorkspace(
 				// since nothing about a cloud workspace runs on this device.
 				// Returns as soon as the row exists — the sandbox is still being
 				// provisioned behind it, which the workspace screen renders.
+				// Same rule as a local create: an agent launches only when there
+				// is something to say to it. Attachments stay behind — they are
+				// written to a host, and this workspace's host doesn't exist yet.
+				const wantCloudAgent =
+					selectedAgent !== "none" &&
+					(!!draft.prompt.trim() ||
+						draft.linkedPR !== null ||
+						draft.linkedIssues.length > 0);
+				const cloudPrompt = wantCloudAgent
+					? await promptContext.build({
+							userPrompt: draft.prompt,
+							linkedPR: draft.linkedPR,
+							linkedIssues: draft.linkedIssues,
+							timeoutMs: 2000,
+						})
+					: null;
 				const created = await createCloudWorkspace.mutateAsync({
 					organizationId: activeOrganizationId,
 					environmentId: environment.id,
 					name: workspaceName ?? undefined,
-					prompt: draft.prompt.trim() || undefined,
+					// Linked PR and issue bodies can push this past the create input's
+					// 20,000-character cap.
+					prompt:
+						(cloudPrompt ?? draft.prompt).trim().slice(0, 20_000) || undefined,
 					branch: branchName ?? "main",
+					...(wantCloudAgent
+						? {
+								agent: selectedAgent,
+								model: selectedModel ?? undefined,
+								effort: selectedEffort ?? undefined,
+								mode: selectedMode ?? undefined,
+							}
+						: {}),
 				});
 				closeAndResetDraft();
 				// The cloud list is what both the sidebar and the workspace route
@@ -163,7 +183,6 @@ export function useSubmitWorkspace(
 					error instanceof Error
 						? error.message
 						: t({
-								id: "dashboard.newWorkspaceModal.submit.cloudCreateFailed",
 								message: "Could not create cloud workspace",
 							}),
 				);

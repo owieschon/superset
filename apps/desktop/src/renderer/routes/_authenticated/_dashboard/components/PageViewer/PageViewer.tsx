@@ -27,6 +27,7 @@ interface PageViewerProps {
 	commentsEnabled: boolean;
 	onCommentsEnabledChange: (enabled: boolean) => void;
 	onResolved?: (page: ResolvedPage) => void;
+	onFramePointerDown?: () => void;
 }
 
 export function PageViewer({
@@ -36,6 +37,7 @@ export function PageViewer({
 	commentsEnabled,
 	onCommentsEnabledChange,
 	onResolved,
+	onFramePointerDown,
 }: PageViewerProps) {
 	const { t } = useLingui();
 	const { data: session } = authClient.useSession();
@@ -69,18 +71,15 @@ export function PageViewer({
 				title={
 					missing
 						? t({
-								id: "dashboard.pageViewer.pageMissingTitle",
 								message: "This page no longer exists",
 							})
 						: t({
-								id: "dashboard.pageViewer.pageOpenFailedTitle",
 								message: "This page could not be opened",
 							})
 				}
 				description={
 					missing
 						? t({
-								id: "dashboard.pageViewer.pageMissingDescription",
 								message:
 									"It may have been deleted, or it belongs to another organization.",
 							})
@@ -105,9 +104,7 @@ export function PageViewer({
 			onEnabledChange={onCommentsEnabledChange}
 			user={{
 				id: session?.user.id ?? "",
-				name:
-					session?.user.name ??
-					t({ id: "dashboard.pageViewer.youFallback", message: "You" }),
+				name: session?.user.name ?? t({ message: "You" }),
 				image: session?.user.image ?? null,
 			}}
 		>
@@ -118,6 +115,7 @@ export function PageViewer({
 						title={resolvedTitle}
 						initialScrollY={scrollPositions.get(scrollKey) ?? 0}
 						onScrollYChange={(y) => scrollPositions.set(scrollKey, y)}
+						onFramePointerDown={onFramePointerDown}
 					/>
 				</div>
 				{commentsEnabled ? (
