@@ -1,0 +1,151 @@
+# Advisory pre-ask self-check. It runs the vendored qc-pr-gate harness against
+# the PR it is triggered by and reports the verdict in the job summary.
+#
+# It is NOT a merge gate. It is never added to required status checks or a
+# ruleset, its `merge_ask_ok` is never a merge criterion, and its verdict is not
+# cited to upstream reviewers (Kiet). It exists so Owen can see what the gate
+# says before asking for review, without depending on a laptop being online.
+#
+# Fork only: the job is guarded to owieschon/superset. Evaluating an upstream
+# superset-sh/superset PR from here would need a read PAT, which is out of scope.
+name: qc-pr-gate (advisory)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number in this repository to evaluate
+        required: true
+        type: string
+      expect_sha:
+        description: Head SHA to pin (L1). Optional; the gate records the head SHA when empty.
+        required: false
+        type: string
+
+# Read-only. The gate shells out to `gh pr view --json`; it never writes.
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: qc-pr-gate-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  # Job name becomes the check-run name. The `cost` profile ignores check names
+  # containing "qc-pr-gate" so this run does not hold its own L4 gate down.
+  qc-pr-gate:
+    name: qc-pr-gate (advisory)
+    if: github.repository == 'owieschon/superset'
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+      EXPECT_SHA: ${{ github.event.pull_request.head.sha || inputs.expect_sha }}
+      RECEIPTS_DIR: ${{ runner.temp }}/qc-receipts
+      QC_PYTHON: ${{ runner.temp }}/qc-venv/bin/python
+    steps:
+      - name: Check out code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up the gate interpreter
+        run: |
+          python3 -m venv "${{ runner.temp }}/qc-venv"
+          "$QC_PYTHON" -m pip install --quiet --upgrade pip
+          "$QC_PYTHON" -m pip install --quiet -r tools/qc-pr-gate/requirements.txt
+
+      # Proves the vendored copy is intact before trusting its verdict.
+      - name: Gate self-test
+        id: selftest
+        run: |
+          code=0
+          "$QC_PYTHON" -m pytest tools/qc-pr-gate/tests/ -q || code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Run qc-pr-gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RECEIPTS_DIR"
+          args=(
+            "${{ github.repository }}#${PR_NUMBER}"
+            --repo-profile cost
+            --receipts-dir "$RECEIPTS_DIR"
+            --dump-gates
+          )
+          if [ -n "${EXPECT_SHA}" ]; then
+            args+=(--expect-sha "${EXPECT_SHA}")
+          fi
+
+          code=0
+          ./tools/qc-pr-gate/qc-pr-gate "${args[@]}" \
+            > "${{ runner.temp }}/qc-stdout.txt" \
+            2> "${{ runner.temp }}/qc-stderr.txt" || code=$?
+
+          cat "${{ runner.temp }}/qc-stdout.txt"
+          cat "${{ runner.temp }}/qc-stderr.txt" >&2
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+          # Advisory: the verdict lives in the summary and the receipt, never in
+          # this job's conclusion. Exit 0 whatever the gate decided.
+          exit 0
+
+      - name: Write job summary
+        if: always()
+        env:
+          GATE_CODE: ${{ steps.gate.outputs.code }}
+          SELFTEST_CODE: ${{ steps.selftest.outputs.code }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os, pathlib
+
+          receipts = sorted(pathlib.Path(os.environ["RECEIPTS_DIR"]).glob("*.json"))
+          gate_code = os.environ.get("GATE_CODE", "")
+          selftest_code = os.environ.get("SELFTEST_CODE", "")
+
+          print("## qc-pr-gate (advisory)\n")
+          print("Pre-ask self-check. Not a merge gate, not a required check, not upstream-facing.\n")
+
+          if not receipts:
+              print(f"No receipt written. Gate exit code `{gate_code}` "
+                    "(3 = `gh` unavailable or the API call failed).\n")
+          else:
+              data = json.loads(receipts[-1].read_text(encoding="utf-8"))
+              verdict = data["verdict"]
+              failing = data.get("first_failing_gate_id") or "—"
+              icon = "✅" if verdict == "PASS" else "❌"
+              print(f"| Field | Value |\n| --- | --- |")
+              print(f"| VERDICT | {icon} **{verdict}** |")
+              print(f"| merge_ask_ok | `{str(data['merge_ask_ok']).lower()}` |")
+              print(f"| First failing gate | `{failing}` |")
+              print(f"| Profile | `{data['profile']}` |")
+              print(f"| Target | `{data['owner_repo']}#{data['number']}` |")
+              print(f"| Head SHA | `{data['head_sha']}` |")
+              print(f"| Source | `{data['source']}` |\n")
+
+              print("<details><summary>Gates</summary>\n")
+              print("| Gate | Status | Detail |\n| --- | --- | --- |")
+              for g in data["gates"]:
+                  detail = str(g.get("detail", "")).replace("|", "\\|")
+                  print(f"| {g['gate_id']} | {g['status']} | {detail} |")
+              print("\n</details>\n")
+
+              for note in data.get("notes", []):
+                  print(f"> {note}\n")
+
+          if selftest_code not in ("0", ""):
+              print(f"⚠️ Vendored gate self-test failed (pytest exit `{selftest_code}`) — "
+                    "treat the verdict above as unproven.\n")
+          PY
+
+      - name: Upload receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: qc-pr-gate-receipt-pr${{ env.PR_NUMBER }}
+          path: ${{ runner.temp }}/qc-receipts/
+          if-no-files-found: warn
+          retention-days: 14

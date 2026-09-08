@@ -1,0 +1,5 @@
+.venv/
+receipts/
+__pycache__/
+*.pyc
+.pytest_cache/
