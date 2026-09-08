@@ -40,6 +40,14 @@ export interface SubagentHarness {
 		hint: SubagentTranscriptHint,
 		parentSessionId: string,
 	): boolean;
+	/**
+	 * Whether a child that already reported its stop comes back to life on a
+	 * later event. True only where the harness really does resume a finished
+	 * child (Codex `send_input`). Everywhere else a post-stop event is a
+	 * straggler — Claude's `Task` PostToolUse lands after the child's own
+	 * SubagentStop — and reviving on it keeps the roster from ever draining.
+	 */
+	revivesAfterStop: boolean;
 	/** The child's transcript file from what its hook events carry. */
 	resolveTranscriptPath(hint: SubagentTranscriptHint): string | undefined;
 	parseTranscript(text: string): ParsedSubagentTranscript;
@@ -53,6 +61,7 @@ const DEFAULT_STOP_EVENTS = new Set(["SubagentStop", "Stop", "SessionEnd"]);
 const defaults: Omit<SubagentHarness, "parseTranscript"> = {
 	isStopEvent: (eventType) => DEFAULT_STOP_EVENTS.has(eventType),
 	belongsToParentSession: () => true,
+	revivesAfterStop: false,
 	resolveTranscriptPath: (hint) =>
 		hint.agentTranscriptPath || hint.transcriptPath || undefined,
 	readDescription: () => undefined,

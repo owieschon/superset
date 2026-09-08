@@ -133,7 +133,11 @@ export function parseCodexRolloutTranscript(text: string): {
  * Codex. A spawned child is its own thread with its own rollout file and
  * its hooks run against that file, so the hook's path is the child's. The
  * rollout's `session_meta` carries the nickname and agent path.
+ *
+ * `send_input` genuinely resumes a child that already stopped, so a
+ * post-stop event here is the child working again, not a straggler.
  */
 export const codexSubagentHarness = defineSubagentHarness({
+	revivesAfterStop: true,
 	parseTranscript: parseCodexRolloutTranscript,
 });

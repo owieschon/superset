@@ -289,6 +289,28 @@ export class TerminalAgentStore extends EventEmitter {
 
 		const nextType = agentType ?? existing?.agentType;
 		const nextPath = transcriptPath ?? existing?.transcriptPath;
+
+		// A child that already reported its stop is finished. Claude fires the
+		// parent's `Task` PostToolUse — carrying the child's agent_id — after
+		// the child's own SubagentStop, so putting it back on the roster here
+		// means the roster never drains and a parent's held completion is
+		// dropped rather than fired. Keep it ended; only harnesses that really
+		// resume a stopped child (Codex `send_input`) revive.
+		if (
+			roster &&
+			existing?.endedAt !== undefined &&
+			!harness.revivesAfterStop
+		) {
+			roster.set(subagentId, {
+				...existing,
+				...(nextType ? { agentType: nextType } : {}),
+				...(nextPath ? { transcriptPath: nextPath } : {}),
+				lastEventAt: occurredAt,
+			});
+			this.emit("change", workspaceId);
+			return;
+		}
+
 		const next: TerminalSubagent = {
 			id: subagentId,
 			...(nextType ? { agentType: nextType } : {}),
