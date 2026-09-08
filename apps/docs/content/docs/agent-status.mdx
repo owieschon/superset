@@ -22,6 +22,21 @@ Superset installs lifecycle hooks and command wrappers into each agent's config 
 
 The hooks no-op outside Superset terminals (they check for a Superset-supplied env var). To remove them from an agent's config entirely, turn off the agent's **Superset hooks** toggle in **Settings → Agents**.
 
+## The Board Columns
+
+The workspace board sorts every workspace into one of six columns. The columns are fixed and never reorderable — they follow the workflow, not anyone's preference.
+
+| Column | What it means |
+|--------|---------------|
+| **Idle** | No agent running, no PR open. Nothing to do here. |
+| **Working** | An agent is actively running. |
+| **Needs attention** | **This is the authoritative "page a human" signal.** The agent is blocked waiting for your input — permission to run a tool, approval on a plan, or an answer to a question. When a workspace lands here, the operator must look at it. The dock badge, notification sound, and sidebar highlight all route through this column. |
+| **Needs review** | The agent stopped. It might have finished its work, or it might have been interrupted. The board doesn't know which — it only knows the agent stopped. "Needs review" means "look at this," not "this is ready." |
+| **Merged** | The PR was merged and the workspace is archived. |
+| **Deleted** | The workspace was deleted — a tombstone kept for the activity feed. |
+
+The columns are not a status machine. An agent stopping and starting again moves the workspace from "Needs review" back to "Working" — the board reflects what is happening now, not what happened last.
+
 ## Notifications
 
 - **Finished / waiting for input**: get notified when an agent finishes or pauses for your input. Configure sounds in Settings.
