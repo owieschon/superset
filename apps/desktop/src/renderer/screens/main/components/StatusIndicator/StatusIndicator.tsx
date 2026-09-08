@@ -28,7 +28,7 @@ const STATUS_CONFIG = {
 		pingColor: "",
 		dotColor: "bg-green-500",
 		pulse: false,
-		tooltip: "Ready for review",
+		tooltip: "Needs review",
 	},
 } as const satisfies Record<
 	ActivePaneStatus,
@@ -45,7 +45,7 @@ interface StatusIndicatorProps {
  * - Yellow pulsing: needs user input (permission)
  * - Red pulsing: agent failed
  * - Amber pulsing: agent working
- * - Green static: ready for review
+ * - Green static: needs review
  */
 export function StatusIndicator({ status, className }: StatusIndicatorProps) {
 	const config = STATUS_CONFIG[status];
