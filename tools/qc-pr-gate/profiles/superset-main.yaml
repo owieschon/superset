@@ -1,0 +1,16 @@
+# Superset main / upstream QC profile: L1-L6 + craft C1-C11 hard where applicable.
+# Empty required_checks uses all-must-success, but CodeRabbit/cubic alone = thin_upstream_checks (L4 FAIL).
+# Prose HARD: C8 required headers, C9 ban "farm", C10 What & why max length; C11 Claude/Codex-wo-Cursor = WARN.
+name: superset-main
+craft: true
+required_checks: []
+allow_stacked_bases: false
+thin_review_bots_only_fail: true
+thin_review_bot_names:
+  - coderabbit
+  - cubic
+# Tunable: What & why section char budget (C10 FAIL if exceeded)
+what_why_max_chars: 1200
+ban_farm_word: true
+repos:
+  - superset-sh/superset
