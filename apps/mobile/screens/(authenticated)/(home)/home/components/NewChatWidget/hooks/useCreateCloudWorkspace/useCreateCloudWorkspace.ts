@@ -1,3 +1,4 @@
+import { msg } from "@lingui/core/macro";
 import { i18n } from "@superset/i18n";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
@@ -14,6 +15,11 @@ interface CreateCloudWorkspaceArgs {
 	branch: string | null;
 	/** Null when no environment exists yet; create cannot proceed without one. */
 	environmentId: string | null;
+	/** Built-in agent to launch with the message as its prompt; null for none. */
+	agent: string | null;
+	/** Null launches the agent's own default. Ignored without an agent. */
+	model: string | null;
+	effort: string | null;
 	message: PromptInputMessage;
 }
 
@@ -33,6 +39,9 @@ export function useCreateCloudWorkspace() {
 		mutationFn: async ({
 			branch,
 			environmentId,
+			agent,
+			model,
+			effort,
 			message,
 		}: CreateCloudWorkspaceArgs) => {
 			if (!organizationId) throw new Error("No active organization");
@@ -48,6 +57,8 @@ export function useCreateCloudWorkspace() {
 					"Attachments are not supported for cloud workspaces yet",
 				);
 			}
+			// Only with something to say: an empty prompt leaves it idle.
+			const launchAgent = agent && message.text.trim() ? agent : undefined;
 			return apiClient.cloudWorkspace.create.mutate({
 				organizationId,
 				environmentId,
@@ -55,9 +66,15 @@ export function useCreateCloudWorkspace() {
 				// Omitted when unresolved: the server falls back to the repo's
 				// actual default branch, which the client must not guess.
 				branch: branch ?? undefined,
+				agent: launchAgent,
+				model: launchAgent ? (model ?? undefined) : undefined,
+				effort: launchAgent ? (effort ?? undefined) : undefined,
 			});
 		},
-		onSuccess: (row: CloudWorkspaceRow, { branch }) => {
+		onSuccess: (
+			row: CloudWorkspaceRow,
+			{ branch, agent, model, effort, message },
+		) => {
 			// The API emits `workspace_created`; this is only the client asking.
 			posthog.capture("workspace_create_requested", {
 				workspace_id: row.id,
@@ -65,9 +82,9 @@ export function useCreateCloudWorkspace() {
 				host_kind: "cloud",
 				source: "mobile_composer",
 				base_branch: branch,
-				// Nothing launches on a cloud create today; the prompt only feeds
-				// the server-side auto-name.
-				agent: null,
+				agent: agent && message.text.trim() ? agent : null,
+				model,
+				effort,
 			});
 			// Seed the list before navigating: the workspace screen decides
 			// between "provisioning" and "not found" off this cache, and even
@@ -87,10 +104,11 @@ export function useCreateCloudWorkspace() {
 				base_branch: branch,
 			});
 			Alert.alert(
-				i18n._({
-					id: "mobile.cloudWorkspace.createFailed",
-					message: "Could not create cloud workspace",
-				}),
+				i18n._(
+					msg({
+						message: "Could not create cloud workspace",
+					}),
+				),
 				error instanceof Error ? error.message : String(error),
 			);
 		},

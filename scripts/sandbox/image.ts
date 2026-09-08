@@ -49,7 +49,12 @@ function pinnedVersion(dep: string): string {
 	return version;
 }
 
-const BUN_VERSION = "1.4.0";
+// The repo pins bun once, in .bun-version; a sandbox on any other version
+// rejects the frozen lockfile and every dependency install fails.
+const BUN_VERSION = readFileSync(
+	join(import.meta.dir, "..", "..", ".bun-version"),
+	"utf8",
+).trim();
 
 const AGENT_CLI_VERSIONS = {
 	claudeCode: "2.1.257",
@@ -63,17 +68,8 @@ const natives = [
 
 /**
  * Imported at module load but never executed, so they only need to resolve.
- * Mostly mastra's storage stack reached via provider-auth's credential store;
- * trimming that dependency would shrink both this list and the image.
  */
-const runtimeResolutionOnly = [
-	"@mastra/duckdb",
-	"@anush008/tokenizers",
-	"onnxruntime-node",
-	"libsql",
-	"@parcel/watcher",
-	"@xterm/headless",
-];
+const runtimeResolutionOnly = ["@parcel/watcher", "@xterm/headless"];
 
 const BUNDLE = join(
 	REPO_ROOT,

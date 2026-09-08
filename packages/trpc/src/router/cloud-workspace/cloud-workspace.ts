@@ -1,5 +1,6 @@
-import { db, dbWs } from "@superset/db/client";
+import { db } from "@superset/db/client";
 import { cloudWorkspaces, environments } from "@superset/db/schema";
+import { isCloudAgentId } from "@superset/shared/cloud-agent-launch";
 import { SHARED_ENVIRONMENT_ORGANIZATION_ID } from "@superset/shared/constants";
 import type { TRPCRouterRecord } from "@trpc/server";
 import { TRPCError } from "@trpc/server";
@@ -104,11 +105,27 @@ export const cloudWorkspaceRouter = {
 				 * whose branch query hadn't answered must not guess "main". */
 				branch: z.string().min(1).max(300).optional(),
 				environmentId: z.string().uuid(),
+				/**
+				 * A built-in agent to launch on first boot with `prompt`. Absent
+				 * means the workspace comes up idle.
+				 */
+				agent: z.string().min(1).optional(),
+				model: z.string().min(1).optional(),
+				effort: z.string().min(1).optional(),
+				mode: z.string().min(1).optional(),
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
 			assertInternal(ctx.email);
 			assertMember(ctx.organizationIds, input.organizationId);
+			if (input.agent && !isCloudAgentId(input.agent)) {
+				// Only the built-in presets exist inside a sandbox; the clients offer
+				// nothing else, so this is a developer error, not a user one.
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: `Unknown agent "${input.agent}"`,
+				});
+			}
 
 			const environment = await db.query.environments.findFirst({
 				where: and(
@@ -137,7 +154,7 @@ export const cloudWorkspaceRouter = {
 			// rejects whenever two creates overlap.
 			const id = crypto.randomUUID();
 			const providerSandboxId = sandboxNameFor(id);
-			const [row] = await dbWs
+			const [row] = await db
 				.insert(cloudWorkspaces)
 				.values({
 					id,
@@ -163,6 +180,17 @@ export const cloudWorkspaceRouter = {
 			const job = {
 				cloudWorkspaceId: row.id,
 				...(input.name ? {} : { namingPrompt: input.prompt ?? "" }),
+				...(input.agent
+					? {
+							launch: {
+								agent: input.agent,
+								prompt: input.prompt ?? "",
+								model: input.model,
+								effort: input.effort,
+								mode: input.mode,
+							},
+						}
+					: {}),
 			};
 
 			if (isLocalApi) {
@@ -189,7 +217,7 @@ export const cloudWorkspaceRouter = {
 			} catch (error) {
 				// Nothing was provisioned, so there is no sandbox to tear down —
 				// but the row must not sit in `provisioning` with no job coming.
-				await dbWs
+				await db
 					.update(cloudWorkspaces)
 					.set({ status: "failed" })
 					.where(eq(cloudWorkspaces.id, row.id));
@@ -230,7 +258,7 @@ export const cloudWorkspaceRouter = {
 			}
 			assertInternal(ctx.email);
 			assertMember(ctx.organizationIds, row.organizationId);
-			const [renamed] = await dbWs
+			const [renamed] = await db
 				.update(cloudWorkspaces)
 				.set({ name: input.name })
 				.where(eq(cloudWorkspaces.id, input.id))
@@ -291,7 +319,7 @@ export const cloudWorkspaceRouter = {
 			if (row.providerSandboxId) {
 				await deleteSandbox(row.providerSandboxId);
 			}
-			await dbWs
+			await db
 				.update(cloudWorkspaces)
 				.set({ status: "deleted", sandboxUrl: null })
 				.where(eq(cloudWorkspaces.id, row.id));
