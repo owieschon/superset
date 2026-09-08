@@ -1,0 +1,29 @@
+{
+  "number": 6,
+  "title": "fix(events): state the tracked log history accurately",
+  "url": "https://github.com/owieschon/gonogo/pull/6",
+  "repository": {
+    "nameWithOwner": "owieschon/gonogo"
+  },
+  "headRefName": "fix/event-log-scope",
+  "baseRefName": "main",
+  "headRefOid": "b445bad5b9f6d94006f36a2369a5bde89466a5b0",
+  "isDraft": false,
+  "mergeable": "MERGEABLE",
+  "mergeStateStatus": "CLEAN",
+  "reviewDecision": null,
+  "statusCheckRollup": {
+    "state": "SUCCESS",
+    "contexts": {
+      "nodes": [
+        {
+          "name": "check",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/owieschon/gonogo/actions/runs/33820674058/job/100862457304"
+        }
+      ]
+    }
+  },
+  "description": "tested"
+}

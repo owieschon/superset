@@ -1,0 +1,37 @@
+{
+  "additions": 102,
+  "baseRefName": "main",
+  "changedFiles": 2,
+  "deletions": 0,
+  "headRefName": "fix/claude-queued-handoff",
+  "headRefOid": "89e57c310e3a74130e1c5d6784e2bc443cf669dd",
+  "isDraft": false,
+  "mergeStateStatus": "BLOCKED",
+  "mergeable": "MERGEABLE",
+  "number": 7255,
+  "reviewDecision": "REVIEW_REQUIRED",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-07T04:23:59Z",
+      "conclusion": "NEUTRAL",
+      "detailsUrl": "https://www.cubic.dev/pr/superset-sh/superset/pull/7255",
+      "name": "cubic · AI code reviewer",
+      "startedAt": "2026-09-07T04:23:56Z",
+      "status": "COMPLETED",
+      "workflowName": ""
+    },
+    {
+      "__typename": "StatusContext",
+      "context": "CodeRabbit",
+      "startedAt": "2026-09-07T04:27:13Z",
+      "state": "SUCCESS",
+      "targetUrl": ""
+    }
+  ],
+  "title": "fix(host-service): preserve consumed Claude prompts in handoffs",
+  "updatedAt": "2026-09-07T16:51:17Z",
+  "url": "https://github.com/superset-sh/superset/pull/7255",
+  "repository": "superset-sh/superset",
+  "body": "## What & why\n\nPreserve consumed Claude prompts.\n\n## How I tested it\n\n- bun test\n\nAgent/session mechanism: prompt queue ids retained.\n"
+}

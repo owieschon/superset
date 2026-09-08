@@ -1,0 +1,12 @@
+name: cost
+craft: false
+required_checks: []
+allow_stacked_bases: false
+thin_review_bots_only_fail: false
+# The advisory fork workflow runs this gate as a PR check named "qc-pr-gate
+# (advisory)". That check is IN_PROGRESS for as long as the gate is evaluating,
+# so leaving it in the rollup would pin L4 to FAIL on every run. Matching is a
+# case-insensitive substring of the observed check name.
+ignore_check_names:
+  - qc-pr-gate
+repos: []
