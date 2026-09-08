@@ -359,6 +359,47 @@ describe("notificationsRouter.hook", () => {
 			expect(terminalAgentStore.get("terminal-1")?.lastEventType).toBe("Start");
 		});
 
+		// The ordering the native proof run caught: Claude fires the parent's
+		// `Task` PostToolUse (carrying the child's agent_id) after that child's
+		// SubagentStop. The completion must still land, exactly once.
+		it("completes once when each child's events trail its own stop", async () => {
+			const { ctx, broadcastAgentLifecycle, terminalAgentStore } =
+				createContext("workspace-1");
+			const caller = notificationsRouter.createCaller(ctx);
+			await startParentWithChild(caller);
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "SubagentStart",
+				subagent: { id: "child-2" },
+			});
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "Stop",
+				agent: { agentId: "claude", sessionId: "root" },
+			});
+			broadcastAgentLifecycle.mockClear();
+
+			for (const id of ["child-1", "child-2"]) {
+				await caller.hook({
+					terminalId: "terminal-1",
+					eventType: "SubagentStop",
+					subagent: { id },
+				});
+				await caller.hook({
+					terminalId: "terminal-1",
+					eventType: "PostToolUse",
+					subagent: { id },
+				});
+			}
+
+			expect(broadcastAgentLifecycle).toHaveBeenCalledTimes(1);
+			expect(broadcastAgentLifecycle.mock.calls[0]?.[0]).toMatchObject({
+				eventType: "Stop",
+				terminalId: "terminal-1",
+			});
+			expect(terminalAgentStore.get("terminal-1")?.lastEventType).toBe("Stop");
+		});
+
 		it("drops the held completion when the parent starts a new turn", async () => {
 			const { ctx, broadcastAgentLifecycle, terminalAgentStore } =
 				createContext("workspace-1");

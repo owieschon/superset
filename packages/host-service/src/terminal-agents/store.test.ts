@@ -160,6 +160,85 @@ describe("TerminalAgentStore", () => {
 			expect(store.get("t1")?.subagents).toBeUndefined();
 		});
 
+		// Claude fires the parent's `Task` PostToolUse, carrying the child's
+		// agent_id, after the child's own SubagentStop. Reviving on it used to
+		// keep the roster permanently non-empty.
+		it("keeps a child finished when its own events straggle in after the stop", () => {
+			attach();
+			store.recordSubagentEvent({
+				terminalId: "t1",
+				workspaceId: WORKSPACE,
+				eventType: "SubagentStart",
+				subagentId: "a1",
+				agentType: "general-purpose",
+				occurredAt: NOW + 200,
+			});
+			store.recordSubagentEvent({
+				terminalId: "t1",
+				workspaceId: WORKSPACE,
+				eventType: "SubagentStop",
+				subagentId: "a1",
+				occurredAt: NOW + 300,
+			});
+			expect(store.get("t1")?.subagents).toBeUndefined();
+
+			store.recordSubagentEvent({
+				terminalId: "t1",
+				workspaceId: WORKSPACE,
+				eventType: "PostToolUse",
+				subagentId: "a1",
+				transcriptPath: "/tmp/child.jsonl",
+				occurredAt: NOW + 400,
+			});
+
+			expect(store.get("t1")?.subagents).toBeUndefined();
+			// Still addressable for its pane, and still carrying what the
+			// straggler revealed.
+			const child = store.getSubagent("t1", "a1");
+			expect(child?.endedAt).toBe(NOW + 300);
+			expect(child?.transcriptPath).toBe("/tmp/child.jsonl");
+		});
+
+		it("revives a stopped child for a harness that resumes one", () => {
+			store.recordEvent({
+				terminalId: "t2",
+				workspaceId: WORKSPACE,
+				eventType: "Start",
+				agentId: "codex",
+				agentSessionId: "s1",
+				occurredAt: NOW,
+			});
+			store.recordSubagentEvent({
+				terminalId: "t2",
+				workspaceId: WORKSPACE,
+				eventType: "SubagentStart",
+				subagentId: "c1",
+				occurredAt: NOW + 200,
+			});
+			store.recordSubagentEvent({
+				terminalId: "t2",
+				workspaceId: WORKSPACE,
+				eventType: "SubagentStop",
+				subagentId: "c1",
+				occurredAt: NOW + 300,
+			});
+			expect(store.get("t2")?.subagents).toBeUndefined();
+
+			// `send_input` puts the child back to work.
+			store.recordSubagentEvent({
+				terminalId: "t2",
+				workspaceId: WORKSPACE,
+				eventType: "PostToolUse",
+				subagentId: "c1",
+				occurredAt: NOW + 400,
+			});
+
+			expect(store.get("t2")?.subagents?.map((child) => child.id)).toEqual([
+				"c1",
+			]);
+			expect(store.getSubagent("t2", "c1")?.endedAt).toBeUndefined();
+		});
+
 		it("caps the roster per terminal, dropping the oldest child", () => {
 			attach();
 			for (let i = 0; i < 70; i += 1) {
@@ -284,6 +363,41 @@ describe("TerminalAgentStore", () => {
 				occurredAt: NOW - 11 * 60_000,
 			});
 			expect(store.releaseSettledStops()).toHaveLength(1);
+		});
+
+		// The native race from the proof run: each child's PostToolUse trails
+		// its SubagentStop. The completion must still land on the last stop.
+		it("releases on the last child's stop even when its events trail it", () => {
+			attach();
+			startChild("a1");
+			startChild("a2", NOW + 110);
+			expect(deferStop()).toBe(true);
+
+			for (const [id, stopAt] of [
+				["a1", NOW + 300],
+				["a2", NOW + 400],
+			] as const) {
+				store.recordSubagentEvent({
+					terminalId: "t1",
+					workspaceId: WORKSPACE,
+					eventType: "SubagentStop",
+					subagentId: id,
+					occurredAt: stopAt,
+				});
+				store.recordSubagentEvent({
+					terminalId: "t1",
+					workspaceId: WORKSPACE,
+					eventType: "PostToolUse",
+					subagentId: id,
+					occurredAt: stopAt + 10,
+				});
+			}
+
+			expect(store.releaseSettledStops(WORKSPACE, NOW + 500)).toEqual([
+				{ terminalId: "t1", workspaceId: WORKSPACE, occurredAt: NOW + 500 },
+			]);
+			expect(store.get("t1")?.lastEventType).toBe("Stop");
+			expect(store.releaseSettledStops()).toEqual([]);
 		});
 
 		it("scopes a release to the workspace asked for", () => {
