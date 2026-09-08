@@ -18,7 +18,7 @@ export function getV2NativeNotificationContent({
 }: V2NativeNotificationContentOptions): { title: string; body: string } {
 	const agentLabel = getAgentLabel(payload.agent);
 	const action =
-		payload.eventType === "PermissionRequest" ? "Needs Attention" : "Complete";
+		payload.eventType === "PermissionRequest" ? "Needs Attention" : "Stopped";
 	const workspaceLabel = cleanLabel(workspaceName) ?? "Workspace";
 
 	return {

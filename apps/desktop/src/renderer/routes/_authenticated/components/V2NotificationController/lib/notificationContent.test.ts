@@ -23,7 +23,7 @@ describe("getV2NativeNotificationContent", () => {
 				}),
 			}),
 		).toEqual({
-			title: "Codex - Complete",
+			title: "Codex - Stopped",
 			body: "Improve notifications",
 		});
 	});
@@ -50,7 +50,7 @@ describe("getV2NativeNotificationContent", () => {
 				payload: payload({ agent: { agentId: "droid" } }),
 			}),
 		).toEqual({
-			title: "Droid - Complete",
+			title: "Droid - Stopped",
 			body: "Workspace",
 		});
 
@@ -60,7 +60,7 @@ describe("getV2NativeNotificationContent", () => {
 				payload: payload({ agent: undefined }),
 			}),
 		).toMatchObject({
-			title: "Agent - Complete",
+			title: "Agent - Stopped",
 			body: "Workspace",
 		});
 	});
