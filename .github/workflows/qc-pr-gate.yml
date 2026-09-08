@@ -40,27 +40,27 @@ jobs:
     name: qc-pr-gate (advisory)
     if: github.repository == 'owieschon/superset'
     runs-on: ubuntu-latest
+    # Only github/inputs contexts are available in job-level env; paths that need
+    # the runner's temp dir use the $RUNNER_TEMP variable inside the steps.
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
       EXPECT_SHA: ${{ github.event.pull_request.head.sha || inputs.expect_sha }}
-      RECEIPTS_DIR: ${{ runner.temp }}/qc-receipts
-      QC_PYTHON: ${{ runner.temp }}/qc-venv/bin/python
     steps:
       - name: Check out code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up the gate interpreter
         run: |
-          python3 -m venv "${{ runner.temp }}/qc-venv"
-          "$QC_PYTHON" -m pip install --quiet --upgrade pip
-          "$QC_PYTHON" -m pip install --quiet -r tools/qc-pr-gate/requirements.txt
+          python3 -m venv "$RUNNER_TEMP/qc-venv"
+          "$RUNNER_TEMP/qc-venv/bin/python" -m pip install --quiet --upgrade pip
+          "$RUNNER_TEMP/qc-venv/bin/python" -m pip install --quiet -r tools/qc-pr-gate/requirements.txt
 
       # Proves the vendored copy is intact before trusting its verdict.
       - name: Gate self-test
         id: selftest
         run: |
           code=0
-          "$QC_PYTHON" -m pytest tools/qc-pr-gate/tests/ -q || code=$?
+          "$RUNNER_TEMP/qc-venv/bin/python" -m pytest tools/qc-pr-gate/tests/ -q || code=$?
           echo "code=$code" >> "$GITHUB_OUTPUT"
           exit 0
 
@@ -69,11 +69,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p "$RECEIPTS_DIR"
+          export QC_PYTHON="$RUNNER_TEMP/qc-venv/bin/python"
+          receipts_dir="$RUNNER_TEMP/qc-receipts"
+          mkdir -p "$receipts_dir"
+
           args=(
             "${{ github.repository }}#${PR_NUMBER}"
             --repo-profile cost
-            --receipts-dir "$RECEIPTS_DIR"
+            --receipts-dir "$receipts_dir"
             --dump-gates
           )
           if [ -n "${EXPECT_SHA}" ]; then
@@ -82,11 +85,11 @@ jobs:
 
           code=0
           ./tools/qc-pr-gate/qc-pr-gate "${args[@]}" \
-            > "${{ runner.temp }}/qc-stdout.txt" \
-            2> "${{ runner.temp }}/qc-stderr.txt" || code=$?
+            > "$RUNNER_TEMP/qc-stdout.txt" \
+            2> "$RUNNER_TEMP/qc-stderr.txt" || code=$?
 
-          cat "${{ runner.temp }}/qc-stdout.txt"
-          cat "${{ runner.temp }}/qc-stderr.txt" >&2
+          cat "$RUNNER_TEMP/qc-stdout.txt"
+          cat "$RUNNER_TEMP/qc-stderr.txt" >&2
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
           # Advisory: the verdict lives in the summary and the receipt, never in
@@ -99,10 +102,12 @@ jobs:
           GATE_CODE: ${{ steps.gate.outputs.code }}
           SELFTEST_CODE: ${{ steps.selftest.outputs.code }}
         run: |
+          export RECEIPTS_DIR="$RUNNER_TEMP/qc-receipts"
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json, os, pathlib
 
-          receipts = sorted(pathlib.Path(os.environ["RECEIPTS_DIR"]).glob("*.json"))
+          receipts_dir = pathlib.Path(os.environ["RECEIPTS_DIR"])
+          receipts = sorted(receipts_dir.glob("*.json")) if receipts_dir.is_dir() else []
           gate_code = os.environ.get("GATE_CODE", "")
           selftest_code = os.environ.get("SELFTEST_CODE", "")
 
@@ -117,7 +122,8 @@ jobs:
               verdict = data["verdict"]
               failing = data.get("first_failing_gate_id") or "—"
               icon = "✅" if verdict == "PASS" else "❌"
-              print(f"| Field | Value |\n| --- | --- |")
+              print("| Field | Value |")
+              print("| --- | --- |")
               print(f"| VERDICT | {icon} **{verdict}** |")
               print(f"| merge_ask_ok | `{str(data['merge_ask_ok']).lower()}` |")
               print(f"| First failing gate | `{failing}` |")
@@ -127,7 +133,8 @@ jobs:
               print(f"| Source | `{data['source']}` |\n")
 
               print("<details><summary>Gates</summary>\n")
-              print("| Gate | Status | Detail |\n| --- | --- | --- |")
+              print("| Gate | Status | Detail |")
+              print("| --- | --- | --- |")
               for g in data["gates"]:
                   detail = str(g.get("detail", "")).replace("|", "\\|")
                   print(f"| {g['gate_id']} | {g['status']} | {detail} |")
