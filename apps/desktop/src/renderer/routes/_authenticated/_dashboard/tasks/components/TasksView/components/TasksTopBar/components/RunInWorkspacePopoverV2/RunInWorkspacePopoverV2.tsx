@@ -18,17 +18,18 @@ import { HiCheck, HiMiniPlay } from "react-icons/hi2";
 import { AgentSelect } from "renderer/components/AgentSelect";
 import { useRecentProjects } from "renderer/hooks/host-projects/useRecentProjects";
 import { useHostUrl } from "renderer/hooks/host-service/useHostTargetUrl";
+import { useSelectedHostProjectIds } from "renderer/hooks/useSelectedHostProjectIds";
 import { useV2AgentChoices } from "renderer/hooks/useV2AgentChoices";
 import { showHostServiceUnavailableToast } from "renderer/lib/host-service-unavailable";
 import { DevicePicker } from "renderer/routes/_authenticated/components/DashboardNewWorkspaceModal/components/DashboardNewWorkspaceForm/components/DevicePicker";
 import { useWorkspaceHostOptions } from "renderer/routes/_authenticated/components/DashboardNewWorkspaceModal/components/DashboardNewWorkspaceForm/components/DevicePicker/hooks/useWorkspaceHostOptions";
-import { useSelectedHostProjectIds } from "renderer/routes/_authenticated/components/DashboardNewWorkspaceModal/components/DashboardNewWorkspaceModalContent/hooks/useSelectedHostProjectIds";
 import { ProjectThumbnail } from "renderer/routes/_authenticated/components/ProjectThumbnail";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { deriveBranchName } from "renderer/routes/_authenticated/utils/deriveBranchName";
 import { useV2WorkspaceCreateDefaultsStore } from "renderer/stores/v2-workspace-create-defaults";
 import { useWorkspaceCreates } from "renderer/stores/workspace-creates";
 import type { TaskWithStatus } from "../../../../hooks/useTasksTable";
+import { useBatchWorkspaceCreateReport } from "../../hooks/useBatchWorkspaceCreateReport";
 
 const AGENT_STORAGE_KEY = "lastSelectedV2TaskBatchAgent";
 const NONE = "none" as const;
@@ -60,6 +61,7 @@ export function RunInWorkspacePopoverV2({
 	const { machineId, activeHostUrl } = hostService;
 	const { otherHosts } = useWorkspaceHostOptions();
 	const { submit } = useWorkspaceCreates();
+	const reportBatchOutcome = useBatchWorkspaceCreateReport();
 
 	const lastHostId = useV2WorkspaceCreateDefaultsStore(
 		(state) => state.lastHostId,
@@ -245,15 +247,8 @@ export function RunInWorkspacePopoverV2({
 
 		const promise = Promise.all(handles.map((handle) => handle.completed)).then(
 			(outcomes) => {
-				const failed = outcomes.filter((outcome) => !outcome.ok).length;
-				if (failed > 0) {
-					const firstFailure = outcomes.find((outcome) => !outcome.ok);
-					const details =
-						firstFailure && !firstFailure.ok ? `: ${firstFailure.error}` : "";
-					throw new Error(
-						`${outcomes.length - failed} of ${outcomes.length} succeeded${details}`,
-					);
-				}
+				const report = reportBatchOutcome(outcomes);
+				if (report !== null) throw new Error(report);
 				return outcomes.length;
 			},
 		);
