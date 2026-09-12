@@ -96,6 +96,7 @@ function buildRealBinaryResolver(): string {
       "${getBinDir()}"|"$HOME"/.superset/bin|"$HOME"/.superset-*/bin) continue ;;
     esac
     if [ -x "$dir/$name" ] && [ ! -d "$dir/$name" ]; then
+      [ "$dir/$name" -ef "\${BASH_SOURCE[0]}" ] && continue
       printf "%s\\n" "$dir/$name"
       return 0
     fi

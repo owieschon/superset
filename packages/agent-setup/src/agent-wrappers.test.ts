@@ -6,6 +6,7 @@ import {
 	mkdirSync,
 	readFileSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import * as realOs from "node:os";
@@ -99,6 +100,49 @@ const managedClaudeHookCommand = getClaudeManagedHookCommand();
 const managedDroidHookCommand = getManagedNotifyHookCommand("droid");
 const managedCodexHookCommand = getManagedNotifyHookCommand("codex");
 const managedMastraHookCommand = getManagedNotifyHookCommand("mastracode");
+
+describe("generated agent wrappers", () => {
+	beforeEach(() => {
+		mkdirSync(TEST_BIN_DIR, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(TEST_ROOT, { recursive: true, force: true });
+	});
+
+	it("skips a PATH alias that resolves to the wrapper itself", () => {
+		const aliasBinDir = path.join(TEST_ROOT, "alias-bin");
+		const realBinDir = path.join(TEST_ROOT, "real-bin");
+		const wrapperPath = path.join(TEST_BIN_DIR, "test-agent");
+		const realBinaryPath = path.join(realBinDir, "test-agent");
+		const aliasPath = path.join(aliasBinDir, "test-agent");
+
+		mkdirSync(aliasBinDir, { recursive: true });
+		mkdirSync(realBinDir, { recursive: true });
+		writeFileSync(realBinaryPath, "#!/bin/bash\nprintf real-agent\n", {
+			mode: 0o755,
+		});
+		chmodSync(realBinaryPath, 0o755);
+
+		writeFileSync(
+			wrapperPath,
+			buildWrapperScript("test-agent", 'exec "$REAL_BIN" "$@"'),
+			{ mode: 0o755 },
+		);
+		chmodSync(wrapperPath, 0o755);
+		symlinkSync(wrapperPath, aliasPath);
+
+		const output = execFileSync(aliasPath, [], {
+			encoding: "utf-8",
+			env: {
+				PATH: `${aliasBinDir}:${realBinDir}`,
+			},
+			timeout: 5_000,
+		});
+
+		expect(output).toBe("real-agent");
+	});
+});
 
 describe("agent-wrappers opencode", () => {
 	const originalTerminalId = process.env.SUPERSET_TERMINAL_ID;
