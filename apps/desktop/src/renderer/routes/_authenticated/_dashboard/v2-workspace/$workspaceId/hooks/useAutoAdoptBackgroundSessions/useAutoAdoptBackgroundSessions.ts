@@ -11,6 +11,7 @@ import {
 } from "../../components/BackgroundTerminalsButton/BackgroundTerminalsButton.utils";
 import type { PaneViewerData } from "../../types";
 import { focusOrAddTerminalPane } from "../../utils/focusTerminalPane";
+import { resolveAdoptionFocusRestore } from "./resolveAdoptionFocusRestore";
 
 interface UseAutoAdoptBackgroundSessionsArgs {
 	store: StoreApi<WorkspaceStore<PaneViewerData>>;
@@ -33,6 +34,10 @@ interface UseAutoAdoptBackgroundSessionsArgs {
  * refresh) still get a pane, instead of being stranded by a one-shot pass
  * that fired on a premature or empty list. Deliberately backgrounded sessions
  * (marker set) are always skipped.
+ *
+ * Adoption keeps its hands off a usable active tab, but hands focus to the
+ * session it just adopted when that tab holds only terminals the host no
+ * longer lists — see `resolveAdoptionFocusRestore`.
  */
 export function useAutoAdoptBackgroundSessions({
 	store,
@@ -63,9 +68,17 @@ export function useAutoAdoptBackgroundSessions({
 		).filter((session) => !marked.has(session.terminalId));
 		if (toAdopt.length === 0) return;
 
-		// Oldest→newest so tabs read chronologically; restore the active tab so
-		// adoption never steals focus.
-		const restoreActiveTabId = state.tabs.length > 0 ? state.activeTabId : null;
+		// Read against the pre-adoption layout, before the tabs adoption is
+		// about to add exist.
+		const restoreActiveTabId = resolveAdoptionFocusRestore({
+			tabs: state.tabs,
+			activeTabId: state.activeTabId,
+			liveTerminalIds: sessions.map((session) => session.terminalId),
+		});
+
+		// Oldest→newest so tabs read chronologically, which also leaves
+		// `addTab`'s focus on the newest adopted session when nothing is
+		// restored.
 		for (const session of toAdopt.reverse()) {
 			focusOrAddTerminalPane(store, session.terminalId);
 		}
