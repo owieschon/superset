@@ -1,6 +1,9 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import { formatNumber } from "@superset/i18n/format";
-import { buildTerminalSessionHandoffPrompt } from "@superset/shared/terminal-session-handoff";
+import {
+	buildTerminalSessionHandoffPrompt,
+	type TerminalTranscriptSource,
+} from "@superset/shared/terminal-session-handoff";
 import { Button } from "@superset/ui/button";
 import {
 	Dialog,
@@ -65,7 +68,10 @@ export function TerminalSessionHandoffMenu({
 	const [targetConfigId, setTargetConfigId] = useState("");
 	const [placement, setPlacement] = useState<Placement>("split-pane");
 	const [isStarting, setIsStarting] = useState(false);
-	const [transcript, setTranscript] = useState<string | null>(null);
+	const [transcript, setTranscript] = useState<{
+		text: string;
+		source: TerminalTranscriptSource | undefined;
+	} | null>(null);
 	const [transcriptFailed, setTranscriptFailed] = useState(false);
 
 	const sourceConfig = useMemo(() => {
@@ -102,7 +108,8 @@ export function TerminalSessionHandoffMenu({
 		trpcUtils.terminal.transcript
 			.fetch({ workspaceId, terminalId })
 			.then((result) => {
-				if (!cancelled) setTranscript(result.text ?? "");
+				if (!cancelled)
+					setTranscript({ text: result.text ?? "", source: result.source });
 			})
 			.catch(() => {
 				// Distinct from an empty terminal: reporting "0 characters" and
@@ -149,12 +156,13 @@ export function TerminalSessionHandoffMenu({
 			if (!selectedConfig) return;
 			// Continue stays disabled without a transcript, and the dialog says
 			// why inline; this only guards the impossible.
-			if (!transcript) return;
+			if (!transcript?.text) return;
 			const result = await onCreateNewAgentSession({
 				configId: selectedConfig.id,
 				placement,
 				prompt: buildTerminalSessionHandoffPrompt({
-					transcript,
+					transcript: transcript.text,
+					...(transcript.source ? { transcriptSource: transcript.source } : {}),
 					sourceAgentLabel: sourceConfig?.label ?? binding.agentId,
 					sourceTerminalId: terminalId,
 				}),
@@ -262,15 +270,15 @@ export function TerminalSessionHandoffMenu({
 											<Trans>
 												Measuring the context to send to {selectedConfig.label}…
 											</Trans>
-										) : transcript.length === 0 ? (
+										) : transcript.text.length === 0 ? (
 											<Trans>
 												This terminal has no output to hand over yet.
 											</Trans>
 										) : (
 											<Trans>
-												Sends {formatNumber(transcript.length)} characters of
-												terminal context (about{" "}
-												{formatNumber(estimateTokens(transcript.length))}{" "}
+												Sends {formatNumber(transcript.text.length)} characters
+												of terminal context (about{" "}
+												{formatNumber(estimateTokens(transcript.text.length))}{" "}
 												tokens) to {selectedConfig.label}.
 											</Trans>
 										)}
@@ -330,7 +338,7 @@ export function TerminalSessionHandoffMenu({
 									? !canFork
 									: // Nothing to hand over, or the read failed: refuse before
 										// the click rather than after it.
-										!selectedConfig || !transcript)
+										!selectedConfig || !transcript?.text)
 							}
 						>
 							{isStarting ? (

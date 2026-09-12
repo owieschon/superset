@@ -1,6 +1,9 @@
 import { CLIError } from "@superset/cli-framework";
 import { rawErrorMessage } from "@superset/i18n/errors";
-import { buildTerminalSessionHandoffPrompt } from "@superset/shared/terminal-session-handoff";
+import {
+	buildTerminalSessionHandoffPrompt,
+	type TerminalTranscriptSource,
+} from "@superset/shared/terminal-session-handoff";
 import type { HostServiceClient } from "./host-target";
 
 /**
@@ -16,6 +19,7 @@ export async function buildHandoffPromptFromTerminal(
 	// someone to check the terminal id when the host was unreachable points
 	// them at the one thing that was right.
 	let transcript: string;
+	let transcriptSource: TerminalTranscriptSource | undefined;
 	try {
 		const result = await client.terminal.transcript.query({
 			workspaceId: input.workspaceId,
@@ -23,6 +27,7 @@ export async function buildHandoffPromptFromTerminal(
 			...(input.maxChars === undefined ? {} : { maxChars: input.maxChars }),
 		});
 		transcript = result.text;
+		transcriptSource = result.source;
 	} catch (error) {
 		throw new CLIError(
 			`Couldn't read terminal ${input.terminalId}`,
@@ -39,6 +44,7 @@ export async function buildHandoffPromptFromTerminal(
 	const sourceAgentLabel = await resolveSourceAgentLabel(client, input);
 	return buildTerminalSessionHandoffPrompt({
 		transcript,
+		...(transcriptSource ? { transcriptSource } : {}),
 		...(sourceAgentLabel ? { sourceAgentLabel } : {}),
 		sourceTerminalId: input.terminalId,
 	});

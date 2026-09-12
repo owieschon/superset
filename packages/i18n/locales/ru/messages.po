@@ -12366,8 +12366,8 @@ msgstr "Отправка..."
 msgid "Sending…"
 msgstr "Отправка…"
 
-#. placeholder {0}: formatNumber(transcript.length)
-#. placeholder {1}: formatNumber(estimateTokens(transcript.length))
+#. placeholder {0}: formatNumber(transcript.text.length)
+#. placeholder {1}: formatNumber(estimateTokens(transcript.text.length))
 #. placeholder {2}: selectedConfig.label
 msgid "Sends {0} characters of terminal context (about {1} tokens) to {2}."
 msgstr "Отправит {0} символов контекста терминала (примерно {1} токенов) агенту {2}."

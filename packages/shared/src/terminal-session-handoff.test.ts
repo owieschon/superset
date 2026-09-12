@@ -3,6 +3,7 @@ import {
 	buildBoundedTerminalSessionTranscript,
 	buildTerminalSessionHandoffPrompt,
 	TERMINAL_HANDOFF_MAX_CHARS,
+	type TerminalTranscriptSource,
 } from "./terminal-session-handoff";
 
 describe("buildBoundedTerminalSessionTranscript", () => {
@@ -108,4 +109,45 @@ describe("buildTerminalSessionHandoffPrompt", () => {
 			"Continue the work from a previous terminal session.",
 		);
 	});
+});
+
+describe("handoff context coverage", () => {
+	it.each([
+		["harness", "Provider-recorded conversation text"],
+		["stream", "Reconstructed retained terminal output"],
+		["screen", "Current terminal screen only"],
+	] as const)("carries %s coverage outside historical text", (source, description) => {
+		const prompt = buildTerminalSessionHandoffPrompt({
+			transcript: "[earlier output omitted]\nUser: Keep the correction.",
+			transcriptSource: source,
+			sourceTerminalId: "source",
+		});
+		expect(prompt).toContain(description);
+		expect(prompt.indexOf(description)).toBeLessThan(
+			prompt.indexOf("```terminal-session-context"),
+		);
+		expect(prompt).toContain("[earlier output omitted]");
+		expect(prompt).toContain("User: Keep the correction.");
+	});
+	it("keeps older-host coverage explicitly unknown", () => {
+		const prompt = buildTerminalSessionHandoffPrompt({
+			transcript: "A short result.",
+			sourceTerminalId: "source",
+		});
+		expect(prompt).toContain("The extent of the recorded context is unknown.");
+		expect(prompt).toContain("A short result.");
+	});
+});
+
+it.each([
+	"future-source",
+	"constructor",
+])("unknown host source %s keeps coverage unknown", (source) => {
+	const prompt = buildTerminalSessionHandoffPrompt({
+		transcript: "Retained context.",
+		sourceTerminalId: "source",
+		transcriptSource: source as TerminalTranscriptSource,
+	});
+	expect(prompt).toContain("The extent of the recorded context is unknown.");
+	expect(prompt).not.toContain("Context source: undefined");
 });

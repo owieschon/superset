@@ -90,8 +90,41 @@ describe("readHarnessTranscript", () => {
 		writeFileSync(path, `${"x".repeat(5000)}TAIL-MARKER`);
 
 		const tail = readFileTail(path, 100);
-		expect(tail).toBe(`${"x".repeat(89)}TAIL-MARKER`);
-		expect(tail?.length).toBe(100);
+		expect(tail?.text).toBe(`${"x".repeat(89)}TAIL-MARKER`);
+		expect(tail?.truncated).toBe(true);
+		expect(tail?.text.length).toBe(100);
+	});
+
+	test("marks source omission when tool records leave a short conversation tail", () => {
+		const { worktreePath, sessionId } = seedClaudeSession([
+			JSON.stringify({
+				type: "user",
+				message: { content: "Keep the public contract unchanged." },
+			}),
+			JSON.stringify({
+				type: "assistant",
+				message: {
+					content: [
+						{
+							type: "tool_use",
+							input: { output: "x".repeat(4 * 1024 * 1024 + 1024) },
+						},
+					],
+				},
+			}),
+			JSON.stringify({
+				type: "assistant",
+				message: { content: "Ready to implement." },
+			}),
+		]);
+		const result = readHarnessTranscript({
+			agentId: "claude",
+			agentSessionId: sessionId,
+			worktreePath,
+		});
+		expect(result?.text).toBe(
+			"[earlier output omitted]\nAssistant: Ready to implement.",
+		);
 	});
 
 	test("reads only the tail of a very large session file", () => {

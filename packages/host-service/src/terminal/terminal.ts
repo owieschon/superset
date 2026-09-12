@@ -1208,7 +1208,8 @@ export async function transcriptSession({
 	if ("error" in session) return session;
 
 	// The harness's own store first when it keeps one: same conversation,
-	// already structured, without redraw artefacts or a retention ceiling.
+	// already structured, without redraw artefacts. The reader keeps a bounded
+	// tail and marks any source truncation before the final text bound.
 	// Only while the agent still owns the terminal, though — once its session
 	// ends the terminal is a shell again, and its old conversation would
 	// describe work the terminal is no longer doing.
