@@ -8,6 +8,10 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+	boundTranscriptText,
+	TRANSCRIPT_TRUNCATION_NOTICE,
+} from "@superset/shared/terminal-session-handoff";
 import Database from "better-sqlite3";
 
 /**
@@ -16,7 +20,7 @@ import Database from "better-sqlite3";
  * The PTY stream is the universal source, but it is a reconstruction: rows as
  * they were painted, capped by a retention ring, with tool output and UI
  * chrome interleaved. A harness that already writes its conversation to disk
- * has the same content structured, complete, and free of redraw artefacts, so
+ * provides structured conversation text without redraw artefacts, so
  * prefer it where it exists and fall back to the stream everywhere else.
  */
 
@@ -69,9 +73,13 @@ export type HarnessEnv = Record<string, string | undefined> | undefined;
 
 /**
  * The last `maxBytes` of a file. A cut lands mid-line, and the parser already
- * skips lines it cannot parse, so the only casualty is the oldest turn.
+ * skips lines it cannot parse. Keep the byte-bound omission separate from
+ * the extracted text length: tool records can consume most of the window.
  */
-export function readFileTail(path: string, maxBytes: number): string | null {
+export function readFileTail(
+	path: string,
+	maxBytes: number,
+): { text: string; truncated: boolean } | null {
 	let fd: number | undefined;
 	try {
 		const { size } = statSync(path);
@@ -81,7 +89,10 @@ export function readFileTail(path: string, maxBytes: number): string | null {
 		// A short read would otherwise leave uninitialised heap in the tail,
 		// which then gets decoded and shipped into another agent's prompt.
 		const read = readSync(fd, buffer, 0, length, Math.max(0, size - length));
-		return buffer.subarray(0, Math.max(0, read)).toString("utf8");
+		return {
+			text: buffer.subarray(0, Math.max(0, read)).toString("utf8"),
+			truncated: size > length,
+		};
 	} catch {
 		return null;
 	} finally {
@@ -125,7 +136,7 @@ function readClaudeTranscript(
 	if (raw === null) return null;
 
 	const turns: string[] = [];
-	for (const line of raw.split("\n")) {
+	for (const line of raw.text.split("\n")) {
 		if (!line) continue;
 		let event: ClaudeEvent;
 		try {
@@ -141,9 +152,10 @@ function readClaudeTranscript(
 	if (turns.length === 0) return null;
 
 	const joined = turns.join("\n\n");
-	return joined.length > MAX_HARNESS_TRANSCRIPT_CHARS
-		? joined.slice(-MAX_HARNESS_TRANSCRIPT_CHARS)
-		: joined;
+	return boundTranscriptText(
+		raw.truncated ? `${TRANSCRIPT_TRUNCATION_NOTICE}\n${joined}` : joined,
+		MAX_HARNESS_TRANSCRIPT_CHARS,
+	);
 }
 
 /**
