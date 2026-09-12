@@ -15,6 +15,15 @@ function readNotifyHookTemplate(): string {
 // points at an empty home.
 const emptyHome = mkdtempSync(path.join(tmpdir(), "notify-hook-empty-home-"));
 
+// Non-C locales expose range collation in the hook's /bin/bash interpreter.
+const availableLocales = Bun.spawnSync(["locale", "-a"])
+	.stdout.toString()
+	.split(/\s+/);
+const hookLocales = [
+	"C",
+	...availableLocales.filter((locale) => /^en_US\.utf-?8$/i.test(locale)),
+];
+
 function renderNotifyHookScript(): string {
 	return readNotifyHookTemplate()
 		.replaceAll("{{MARKER}}", NOTIFY_SCRIPT_MARKER)
@@ -37,7 +46,7 @@ function runNotifyHook(
 	envOverrides: Record<string, string> = {},
 ) {
 	return Bun.spawnSync({
-		cmd: ["bash", "-c", renderNotifyHookScript()],
+		cmd: ["/bin/bash", "-c", renderNotifyHookScript()],
 		env: hookEnv(envOverrides),
 		stdin: Buffer.from(JSON.stringify(input)),
 		stdout: "pipe",
@@ -55,7 +64,7 @@ async function runNotifyHookAsync(
 	envOverrides: Record<string, string> = {},
 ) {
 	const proc = Bun.spawn({
-		cmd: ["bash", "-c", renderNotifyHookScript()],
+		cmd: ["/bin/bash", "-c", renderNotifyHookScript()],
 		env: hookEnv(envOverrides),
 		stdin: Buffer.from(JSON.stringify(input)),
 		stdout: "pipe",
@@ -70,7 +79,13 @@ async function runNotifyHookAsync(
 
 /** Fake host-service answering notifications.hook like the real router. */
 function fakeHostService(ignored: boolean) {
-	const requests: Array<{ json: { terminalId?: string } }> = [];
+	const requests: Array<{
+		json: {
+			terminalId?: string;
+			eventType?: string;
+			agent?: { agentId?: string; sessionId?: string };
+		};
+	}> = [];
 	const server = Bun.serve({
 		port: 0,
 		fetch: async (req) => {
@@ -85,6 +100,19 @@ function fakeHostService(ignored: boolean) {
 		url: `http://127.0.0.1:${server.port}`,
 		stop: () => server.stop(true),
 	};
+}
+
+/** Fake v1 host-service endpoint that records incoming requests and returns 200. */
+function fakeV1Service() {
+	const requests: Request[] = [];
+	const server = Bun.serve({
+		port: 0,
+		fetch: (req) => {
+			requests.push(req);
+			return new Response(null, { status: 200 });
+		},
+	});
+	return { requests, port: server.port, stop: () => server.stop(true) };
 }
 
 function writeHookManifest(home: string, orgId: string, endpoint: string) {
@@ -104,7 +132,7 @@ function writeHookManifest(home: string, orgId: string, endpoint: string) {
 
 describe("getNotifyScriptContent", () => {
 	it("bumps the notify hook marker when hook semantics change", () => {
-		expect(NOTIFY_SCRIPT_MARKER).toBe("# Superset agent notification hook v9");
+		expect(NOTIFY_SCRIPT_MARKER).toBe("# Superset agent notification hook v10");
 	});
 
 	it("ignores hooks fired inside a subagent (agent_id present)", () => {
@@ -151,6 +179,117 @@ describe("getNotifyScriptContent", () => {
 		);
 		expect(script).toContain('V1_EVENT_TYPE="$EVENT_TYPE"');
 		expect(script).toContain('V1_EVENT_TYPE="Stop"');
+	});
+
+	it.each(
+		hookLocales,
+	)("suppresses Cursor events imported into Claude's hook (%s)", async (locale) => {
+		const host = fakeHostService(false);
+		const v1 = fakeV1Service();
+		const cursorEvents = [
+			"beforeSubmitPrompt",
+			"preToolUse",
+			"postToolUse",
+			"stop",
+			"sessionStart",
+			"sessionEnd",
+			"subagentStop",
+			"preCompact",
+		];
+		try {
+			const results = [];
+			for (const hook_event_name of cursorEvents) {
+				const result = await runNotifyHookAsync(
+					{ hook_event_name, session_id: "cursor-session" },
+					{
+						SUPERSET_AGENT_ID: "claude",
+						CURSOR_VERSION: "2026.09.02",
+						LC_ALL: locale,
+						SUPERSET_HOST_AGENT_HOOK_URL: `${host.url}/trpc/notifications.hook`,
+					},
+				);
+				results.push(result);
+			}
+			expect(host.requests).toHaveLength(0);
+			for (const result of results) {
+				expect(result.exitCode).toBe(0);
+				expect(result.stderr).toBe("");
+			}
+
+			const v1Result = await runNotifyHookAsync(
+				{ hook_event_name: "stop", session_id: "cursor-session" },
+				{
+					SUPERSET_AGENT_ID: "claude",
+					CURSOR_VERSION: "2026.09.02",
+					LC_ALL: locale,
+					SUPERSET_TERMINAL_ID: "",
+					SUPERSET_TAB_ID: "tab-test",
+					SUPERSET_HOST_AGENT_HOOK_URL: "",
+					SUPERSET_PORT: String(v1.port),
+				},
+			);
+			expect(v1Result.exitCode).toBe(0);
+			expect(v1.requests).toHaveLength(0);
+		} finally {
+			host.stop();
+			v1.stop();
+		}
+	});
+
+	it.each(
+		hookLocales,
+	)("keeps Claude and other non-Cursor hook events dispatching (%s)", async (locale) => {
+		const host = fakeHostService(false);
+		const endpoint = `${host.url}/trpc/notifications.hook`;
+		try {
+			for (const [hook_event_name, eventType] of [
+				["Stop", "Stop"],
+				["UserPromptSubmit", "Start"],
+				["PostToolUse", "PostToolUse"],
+				["PermissionRequest", "PermissionRequest"],
+			] as const) {
+				const result = await runNotifyHookAsync(
+					{ hook_event_name, session_id: "claude-session" },
+					{
+						SUPERSET_AGENT_ID: "claude",
+						CURSOR_VERSION: "2026.09.02",
+						LC_ALL: locale,
+						SUPERSET_HOST_AGENT_HOOK_URL: endpoint,
+					},
+				);
+				expect(result.exitCode).toBe(0);
+				expect(host.requests.at(-1)?.json).toMatchObject({
+					eventType,
+					agent: { agentId: "claude" },
+				});
+			}
+
+			for (const envOverrides of [
+				{ SUPERSET_AGENT_ID: "claude", CURSOR_VERSION: "" },
+				{ SUPERSET_AGENT_ID: "grok", CURSOR_VERSION: "2026.09.02" },
+			]) {
+				const result = await runNotifyHookAsync(
+					{ hook_event_name: "stop", session_id: "other-session" },
+					{ ...envOverrides, SUPERSET_HOST_AGENT_HOOK_URL: endpoint },
+				);
+				expect(result.exitCode).toBe(0);
+			}
+			expect(host.requests).toHaveLength(6);
+			expect(host.requests.slice(-2).map(({ json }) => json)).toEqual([
+				{
+					terminalId: "terminal-test",
+					eventType: "stop",
+					agent: { agentId: "claude", sessionId: "other-session" },
+				},
+				{
+					terminalId: "terminal-test",
+					eventType: "stop",
+					agent: { agentId: "grok", sessionId: "other-session" },
+				},
+			]);
+		} finally {
+			host.stop();
+		}
 	});
 
 	it("gives the v2 host-service hook enough time to deliver", () => {

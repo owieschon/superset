@@ -56,6 +56,14 @@ if [ -z "$EVENT_TYPE" ]; then
   esac
 fi
 
+# Cursor imports Claude hook settings. Its lifecycle events are handled by the
+# Cursor-specific hook, so do not dispatch them under the imported Claude id.
+if [ "$SUPERSET_AGENT_ID" = "claude" ] && [ -n "$CURSOR_VERSION" ]; then
+  case "$EVENT_TYPE" in
+    [[:lower:]]*) exit 0 ;;
+  esac
+fi
+
 # Grok serializes its configured Notification event as lowercase
 # "notification". Only subtypes where the agent is blocked waiting on the
 # user count: permission_prompt (tool/plan approval) and elicitation_dialog
