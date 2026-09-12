@@ -952,7 +952,7 @@ exit 0
 
 	it("bumps hook script markers when hook semantics change", () => {
 		expect(COPILOT_HOOK_MARKER).toBe("# Superset copilot hook v5");
-		expect(CURSOR_HOOK_MARKER).toBe("# Superset cursor hook v7");
+		expect(CURSOR_HOOK_MARKER).toBe("# Superset cursor hook v8");
 		expect(GEMINI_HOOK_MARKER).toBe("# Superset gemini hook v6");
 	});
 
