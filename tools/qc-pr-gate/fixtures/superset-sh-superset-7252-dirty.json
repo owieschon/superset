@@ -1,0 +1,37 @@
+{
+  "additions": 341,
+  "baseRefName": "main",
+  "changedFiles": 5,
+  "deletions": 8,
+  "headRefName": "fix/cursor-imported-claude-hooks",
+  "headRefOid": "a0ee299306896fd6dd8ef51795400233e08d9bd8",
+  "isDraft": false,
+  "mergeStateStatus": "DIRTY",
+  "mergeable": "CONFLICTING",
+  "number": 7252,
+  "reviewDecision": "REVIEW_REQUIRED",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-07T02:48:09Z",
+      "conclusion": "NEUTRAL",
+      "detailsUrl": "https://www.cubic.dev/pr/superset-sh/superset/pull/7252",
+      "name": "cubic · AI code reviewer",
+      "startedAt": "2026-09-07T02:48:06Z",
+      "status": "COMPLETED",
+      "workflowName": ""
+    },
+    {
+      "__typename": "StatusContext",
+      "context": "CodeRabbit",
+      "startedAt": "2026-09-07T02:49:37Z",
+      "state": "SUCCESS",
+      "targetUrl": ""
+    }
+  ],
+  "title": "fix(agent-setup): preserve Cursor identity through tool execution",
+  "updatedAt": "2026-09-07T17:01:20Z",
+  "url": "https://github.com/superset-sh/superset/pull/7252",
+  "repository": "superset-sh/superset",
+  "body": "## What & why\n\nPreserve Cursor identity.\n\n## How I tested it\n\n- bun run lint\n- bun run typecheck\n\nMechanism: hook rewrite; session ids logged.\n"
+}

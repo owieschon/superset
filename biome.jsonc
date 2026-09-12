@@ -19,7 +19,10 @@
 			"!apps/mobile/uniwind-types.d.ts",
 			"!packages/sdk/src",
 			// Vendored Vale style packages (synced by `vale sync`); don't reformat.
-			"!apps/marketing/vale-styles"
+			"!apps/marketing/vale-styles",
+			// Vendored qc-pr-gate harness (upstream: QC-station); keep it byte-identical
+			// to its source so the copy stays diffable.
+			"!tools/qc-pr-gate"
 		]
 	},
 	"formatter": {
