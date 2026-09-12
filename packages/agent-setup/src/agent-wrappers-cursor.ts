@@ -55,6 +55,8 @@ const CURSOR_MANAGED_EVENT_ARGS: Record<string, string> = {
 	stop: "Stop",
 	beforeShellExecution: "PermissionRequest",
 	beforeMCPExecution: "PermissionRequest",
+	postToolUse: "Start",
+	postToolUseFailure: "Start",
 };
 
 function cursorHooksSpec(
@@ -68,7 +70,16 @@ function cursorHooksSpec(
 		desiredEntriesByEvent: Object.fromEntries(
 			Object.entries(CURSOR_MANAGED_EVENT_ARGS).map(([eventName, arg]) => [
 				eventName,
-				[{ command: `${hookScriptPath} ${arg}` }],
+				[
+					{
+						command: `${hookScriptPath} ${arg}`,
+						// Only these tools have managed before-hooks that set PermissionRequest.
+						...(eventName === "postToolUse" ||
+						eventName === "postToolUseFailure"
+							? { matcher: "^(Shell|MCP:.+)$" }
+							: {}),
+					},
+				],
 			]),
 		),
 		cleanEntry: (entry) =>
