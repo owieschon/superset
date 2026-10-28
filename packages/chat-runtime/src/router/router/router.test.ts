@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FakeHarnessScript } from "../../harness/fake";
 import type { ChatRuntime } from "../../index";
-import { agentMessage, turn } from "../../testing/fixtures";
+import { agentMessage, approvalRequest, turn } from "../../testing/fixtures";
 import { createTestRuntime } from "../../testing/testRuntime";
 import {
 	FAKE_HARNESS,
@@ -217,6 +217,140 @@ describe("createChatRouter", () => {
 			await caller.listSessions({ workspaceId: "workspace-2" }),
 		).toHaveLength(1);
 		expect(await caller.listSessions({ limit: 1 })).toHaveLength(1);
+		await runtime.dispose();
+	});
+
+	test("an external consumer can create a session, answer a pending approval by id, and see the session continue; wrong/stale ids are rejected", async () => {
+		const script: FakeHarnessScript = {
+			turns: [
+				[
+					{ kind: "turn", turn: turn("t1") },
+					{
+						kind: "item",
+						item: approvalRequest("ap1", { title: "Run `rm -rf tmp`?" }),
+						turnId: "t1",
+					},
+					{
+						kind: "item",
+						item: agentMessage("a1", "Deleted tmp/"),
+						turnId: "t1",
+					},
+					{
+						kind: "turn",
+						turn: turn("t1", { status: "completed", completedAtMs: 2 }),
+					},
+					{ kind: "session", session: { status: "idle" } },
+				],
+			],
+		};
+		const { harnesses } = fakeHarnessRegistry(script);
+		const runtime = createTestRuntime({ harnesses });
+		const cwd = mkdtempSync(join(tmpdir(), "chat-router-approval-cwd-"));
+		const router = createChatRouter(runtime, { resolveCwd: () => cwd });
+		const caller = createChatCallerFactory(router)({});
+
+		const created = await caller.createSession(createSessionInput());
+		await caller.prompt({
+			commandId: randomUUID(),
+			sessionId: created.sessionId,
+			clientId: "client-1",
+			content: [{ type: "text", text: "clean up tmp" }],
+		});
+
+		// A real pending question, with its current request id, shows up
+		// through the same read path a public consumer would use.
+		await waitFor(() =>
+			journalEnvelopes(runtime, created.sessionId).some(
+				(envelope) =>
+					envelope.event.type === "item" &&
+					envelope.event.item.kind === "approval_request" &&
+					envelope.event.item.status === "pending",
+			),
+		);
+		const beforeAnswer = await caller.getItems({
+			sessionId: created.sessionId,
+		});
+		expect(beforeAnswer.ok).toBe(true);
+		const pendingEnvelope = beforeAnswer.ok
+			? beforeAnswer.envelopes.find(
+					(envelope) =>
+						envelope.event.type === "item" &&
+						envelope.event.item.kind === "approval_request",
+				)
+			: undefined;
+		const pendingItem =
+			pendingEnvelope?.event.type === "item"
+				? pendingEnvelope.event.item
+				: undefined;
+		expect(pendingItem).toMatchObject({
+			id: "ap1",
+			status: "pending",
+			title: "Run `rm -rf tmp`?",
+		});
+
+		// A mismatched request id is rejected, not silently accepted.
+		await expect(
+			caller.respondToApproval({
+				commandId: randomUUID(),
+				sessionId: created.sessionId,
+				approvalId: "not-ap1",
+				decision: { type: "accept" },
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+		// The correct, current request id clears the approval and the turn
+		// continues to completion.
+		await caller.respondToApproval({
+			commandId: randomUUID(),
+			sessionId: created.sessionId,
+			approvalId: "ap1",
+			decision: { type: "accept" },
+		});
+		await waitFor(
+			() => runtime.sessions.get(created.sessionId)?.status === "idle",
+		);
+
+		const afterAnswer = await caller.getItems({ sessionId: created.sessionId });
+		expect(afterAnswer.ok).toBe(true);
+		if (afterAnswer.ok) {
+			// The journal is append-only: both the original "pending" emission
+			// and this "answered" one are present, so take the latest.
+			const answeredEnvelope = [...afterAnswer.envelopes]
+				.reverse()
+				.find(
+					(envelope) =>
+						envelope.event.type === "item" &&
+						envelope.event.item.kind === "approval_request",
+				);
+			const answeredItem =
+				answeredEnvelope?.event.type === "item"
+					? answeredEnvelope.event.item
+					: undefined;
+			expect(answeredItem).toMatchObject({
+				id: "ap1",
+				status: "answered",
+				decision: { type: "accept" },
+			});
+
+			const continued = afterAnswer.envelopes.some(
+				(envelope) =>
+					envelope.event.type === "item" &&
+					envelope.event.item.kind === "agent_message" &&
+					envelope.event.item.text === "Deleted tmp/",
+			);
+			expect(continued).toBe(true);
+		}
+
+		// The now-consumed id is stale on replay and is rejected too.
+		await expect(
+			caller.respondToApproval({
+				commandId: randomUUID(),
+				sessionId: created.sessionId,
+				approvalId: "ap1",
+				decision: { type: "accept" },
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
 		await runtime.dispose();
 	});
 });
